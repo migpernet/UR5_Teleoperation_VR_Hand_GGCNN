@@ -1,0 +1,30 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public class AnimateHandOnInput : MonoBehaviour
+{
+
+    public InputActionProperty triggerValue;
+    public InputActionProperty gripValue;
+    public Animator handAnimator;
+
+    // Start is called before the first frame update
+    void Start()
+    {
+        
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        float trigger = triggerValue.action.ReadValue<float>();
+        float grip = gripValue.action.ReadValue<float>();
+
+        //informar o valor para o Trigger e o Grip da mão do animated Hands (Prefabs)
+        handAnimator.SetFloat("Trigger", trigger);
+        handAnimator.SetFloat("Grip", grip);  
+
+    }
+}
