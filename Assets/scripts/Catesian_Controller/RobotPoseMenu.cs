@@ -18,7 +18,7 @@ public class RobotPoseMenu : MonoBehaviour
     private ROSConnection ros;
 
     [Header("Configurações da Garra")]
-    public string gripperJointName = "robotiq_85_left_knuckle_joint"; 
+    public string gripperJointName = "finger_joint"; 
     public float gripperOpenValue = 0.0f;
     public float gripperClosedValue = 0.8f;
 
@@ -35,7 +35,7 @@ public class RobotPoseMenu : MonoBehaviour
         "wrist_1_joint",
         "wrist_2_joint",
         "wrist_3_joint",
-        "robotiq_85_left_knuckle_joint" 
+        "finger_joint" 
     };
 
     private double[] currentJoints = new double[7];

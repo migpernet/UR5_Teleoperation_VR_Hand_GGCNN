@@ -74,7 +74,7 @@ public partial class CartesianHandController : MonoBehaviour
     private ROSConnection ros;
     public string poseTopic = "unity/target_pose";
     public string gripperTopic = "/ur5/gripper_controller/command";
-    public string gripperJointName = "robotiq_85_left_knuckle_joint"; 
+    public string gripperJointName = "finger_joint"; 
     public float gripperOpenValue = 0.0f;
     public float gripperClosedValue = 0.8f; 
 

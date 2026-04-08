@@ -51,5 +51,5 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "UR5_Teleoperation_VR_Hand.sln"
+    "dotnet.defaultSolution": "UR5_Teleoperation_VR_Hand_GGCNN.sln"
 }
