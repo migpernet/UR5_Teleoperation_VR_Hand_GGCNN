@@ -7,7 +7,9 @@ using RosMessageTypes.Std; // Necessário para o Float32 da largura
 public class GGCNN_Subscriber : MonoBehaviour
 {
     [Header("Configurações de Tópicos ROS")]
+    [Tooltip("O nome do tópico ROS onde a GGCNN publica as poses de preensão. Certifique-se de que corresponda ao nome usado no ROS!")]
     public string poseTopic = "/ggcnn/unity_target_pose";
+    [Tooltip("O nome do tópico ROS onde a GGCNN publica a largura da garra. Certifique-se de que corresponda ao nome usado no ROS!")]
     public string widthTopic = "/ggcnn/unity_gripper_width";
     
     [Header("Referências da Hierarquia")]

@@ -7,7 +7,9 @@ public class RealSense_Subscriber : MonoBehaviour
 {
     [Header("Configuração de Rede")]
     [Tooltip("Use SEMPRE o tópico compressed para não travar o VR")]
-    public string imageTopic = "/camera/color/image_raw/compressed";
+    public string imageTopic = "/camera/color/image_raw/compressed"; // imagem rgb sem os bounding boxes
+    // public string imageTopic = "/camera/color/debug_yolo/compressed"; // imagem comprimida com o bouding boxes
+    // /camera/color/image_raw/compressed
 
     [Header("Referência Visual")]
     [Tooltip("Arraste o seu 'Feed_Video' (RawImage) aqui para mostrar o vídeo da câmera")]
