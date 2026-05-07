@@ -1,7 +1,7 @@
-/*
-Arquivo 2: CartesianHandController_Input.cs (Gestos e Cinemática)
-Este arquivo isola toda a inteligência complexa de leitura das mãos do XR Origin, os cálculos espaciais da pinça e as restrições de giro dos anéis virtuais.
-*/
+// /*
+// Arquivo 2: CartesianHandController_Input.cs (Gestos e Cinemática)
+// Este arquivo isola toda a inteligência complexa de leitura das mãos do XR Origin, os cálculos espaciais da pinça e as restrições de giro dos anéis virtuais.
+// */
 
 using UnityEngine;
 using UnityEngine.XR.Hands;
@@ -16,7 +16,16 @@ public partial class CartesianHandController
     // --- Variáveis de Estado das Esferas (Mão Esquerda) ---
     private bool areGizmosVisible = true;
     private float lastGizmoToggleTime = 0f;
-    private bool wasLeftMiddlePinching = false;
+    
+    private bool wasLookingAtLeftPalm = false; 
+    
+    [Header("Sensibilidade do Gesto (Mão Esquerda)")]
+    [Tooltip("Aumente este valor (ex: 60 a 80) para facilitar o acionamento do gesto. Padrão era 45.")]
+    public float palmFacingThreshold = 75f; 
+    
+    [Header("Elementos Extras para Ocultar (Mão Esquerda)")]
+    [Tooltip("Arraste aqui os 3 Cilindros (Red, Green, Blue) da hierarquia")]
+    public GameObject[] extraCylindersToToggle;
 
     void HandleRightHandPosition(XRHand rightHand)
     {
@@ -139,25 +148,22 @@ public partial class CartesianHandController
             Vector3 pinchCenterLocal = (tP.position + iP.position) / 2f;
             Vector3 pinchCenterWorld = transform.TransformPoint(pinchCenterLocal);
 
-            // Pinça Primária (Esferas)
             bool isPinch = (distThumbIndex < pinchThreshold) && (distThumbRing > grabThreshold);
             
-            // Pinça Secundária (Ligar/Desligar Esferas)
-            bool isMiddlePinch = (distThumbMiddle < pinchThreshold) && (distThumbIndex > grabThreshold);
+            // Gesto de Virar o Pulso (Mão Esquerda)
+            bool isLookingAtPalm = CheckPalmFacingCamera(leftHand);
             
-            // Punho Verdadeiro (Garra)
             bool isFist = (distThumbIndex < grabThreshold) && 
                           (distThumbMiddle < grabThreshold) && 
                           (distThumbRing < grabThreshold + 0.015f) && 
                           (distThumbPinky < grabThreshold + 0.02f);
             
-            // Mão Aberta
             bool isHandOpen = (distThumbIndex > releaseThreshold) && 
                               (distThumbMiddle > releaseThreshold) && 
                               (distThumbRing > releaseThreshold); 
 
-            // --- LÓGICA DE VISIBILIDADE DAS ESFERAS ---
-            if (isMiddlePinch && !wasLeftMiddlePinching && (Time.time - lastGizmoToggleTime > gestureCooldown))
+            // --- LÓGICA DE VISIBILIDADE DAS ESFERAS, CUBO E CILINDROS ---
+            if (isLookingAtPalm && !wasLookingAtLeftPalm && (Time.time - lastGizmoToggleTime > gestureCooldown))
             {
                 areGizmosVisible = !areGizmosVisible;
                 
@@ -166,13 +172,27 @@ public partial class CartesianHandController
                     SetAllGizmosVisibility(areGizmosVisible, areGizmosVisible);
                 }
 
+                if (cubeRenderer != null) cubeRenderer.enabled = areGizmosVisible;
+
+                if (extraCylindersToToggle != null)
+                {
+                    foreach (GameObject cylinder in extraCylindersToToggle)
+                    {
+                        if (cylinder != null) cylinder.SetActive(areGizmosVisible);
+                    }
+                }
+
                 lastGizmoToggleTime = Time.time;
-                wasLeftMiddlePinching = true;
-                PlayClick();
+                wasLookingAtLeftPalm = true;
+                
+                if (audioSource != null && clickSound != null) 
+                {
+                    audioSource.PlayOneShot(clickSound);
+                }
             }
-            else if (!isMiddlePinch)
+            else if (!isLookingAtPalm)
             {
-                wasLeftMiddlePinching = false;
+                wasLookingAtLeftPalm = false;
             }
 
             // --- LÓGICA DE MANIPULAR AS ESFERAS ---
@@ -203,7 +223,8 @@ public partial class CartesianHandController
                         initialSpherePos = currentGrabbedSphere.localPosition; 
                         
                         SetCubeColor(colorRotation);
-                        PlayClick();
+                        
+                        if (audioSource != null && clickSound != null) audioSource.PlayOneShot(clickSound);
 
                         SetAllGizmosVisibility(false, false); 
                         SetSingleGizmoVisibility(lockedAxis, true); 
@@ -244,6 +265,15 @@ public partial class CartesianHandController
                     }
                     
                     SetCubeColor(isRightPinching ? colorPosition : colorDefault);
+
+                    if (cubeRenderer != null) cubeRenderer.enabled = areGizmosVisible;
+                    if (extraCylindersToToggle != null)
+                    {
+                        foreach (GameObject cylinder in extraCylindersToToggle)
+                        {
+                            if (cylinder != null) cylinder.SetActive(areGizmosVisible);
+                        }
+                    }
                 }
             }
 
@@ -255,14 +285,14 @@ public partial class CartesianHandController
                     readyToToggleGripper = true;
                 }
 
-                // Garra agora exige apenas o "Punho Verdadeiro" (dedos recolhidos) e estar pronta
                 if (isFist && readyToToggleGripper && (Time.time - lastGestureTime > gestureCooldown))
                 {
                     lastGripperState = !lastGripperState;
                     
                     float targetValue = lastGripperState ? gripperClosedValue : gripperOpenValue;
                     SendGripperCommand(targetValue);
-                    PlayClick(); 
+                    
+                    if (audioSource != null && clickSound != null) audioSource.PlayOneShot(clickSound); 
 
                     lastGestureTime = Time.time;
                     readyToToggleGripper = false; 
@@ -270,7 +300,966 @@ public partial class CartesianHandController
             }
         }
     }
+
+    private bool CheckPalmFacingCamera(XRHand hand)
+    {
+        if (!hand.isTracked || Camera.main == null) return false;
+
+        var wrist = hand.GetJoint(XRHandJointID.Wrist);
+        if (!wrist.TryGetPose(out Pose wristPose)) return false;
+
+        Vector3 palmDirection = wristPose.rotation * Vector3.up; 
+        Vector3 directionToFace = (Camera.main.transform.position - wristPose.position).normalized;
+        
+        float angle = Vector3.Angle(palmDirection, directionToFace);
+
+        // Agora usa a nova variável que você pode ajustar livremente!
+        return angle < palmFacingThreshold;
+    }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+// // /*
+// // Arquivo 2: CartesianHandController_Input.cs (Gestos e Cinemática)
+// // Este arquivo isola toda a inteligência complexa de leitura das mãos do XR Origin, os cálculos espaciais da pinça e as restrições de giro dos anéis virtuais.
+// // */
+
+// using UnityEngine;
+// using UnityEngine.XR.Hands;
+
+// // A palavra 'partial' junta este arquivo com o principal automaticamente.
+// public partial class CartesianHandController
+// {
+//     // --- Variáveis da Válvula Unidirecional (Mão Direita) ---
+//     private Vector3 lastAcceptedWristPosition; 
+//     private bool isOutsideFenceOnGrab = false; 
+
+//     // --- Variáveis de Estado das Esferas (Mão Esquerda) ---
+//     private bool areGizmosVisible = true;
+//     private float lastGizmoToggleTime = 0f;
+    
+//     // NOVAS VARIÁVEIS PARA O GESTO DO PULSO E VISIBILIDADE EXTRA
+//     private bool wasLookingAtLeftPalm = false; 
+//     private float palmFacingThreshold = 45f; 
+    
+//     [Header("Elementos Extras para Ocultar (Mão Esquerda)")]
+//     [Tooltip("Arraste aqui os 3 Cilindros (Red, Green, Blue) da hierarquia")]
+//     public GameObject[] extraCylindersToToggle;
+
+//     void HandleRightHandPosition(XRHand rightHand)
+//     {
+//         var thumb = rightHand.GetJoint(XRHandJointID.ThumbTip);
+//         var index = rightHand.GetJoint(XRHandJointID.IndexTip);
+
+//         if (thumb.TryGetPose(out Pose tP) && index.TryGetPose(out Pose iP))
+//         {
+//             if (Vector3.Distance(tP.position, iP.position) < pinchThreshold)
+//             {
+//                 if (!isRightPinching) 
+//                 {
+//                     isRightPinching = true;
+//                     initialRightHandPos = iP.position;
+//                     initialGhostPos = ghostCube.position;
+
+//                     Vector3 forwardDir = targetRotation * Vector3.up; 
+//                     Vector3 rawTipPos = initialGhostPos + (forwardDir * tcpZOffset);
+                    
+//                     Vector3 safeWristInit = safetyWorkspace.ApplyLimits(initialGhostPos);
+//                     Vector3 safeTipInit = safetyWorkspace.ApplyLimits(rawTipPos);
+
+//                     if (Vector3.Distance(initialGhostPos, safeWristInit) > 0.001f || 
+//                         Vector3.Distance(rawTipPos, safeTipInit) > 0.001f)
+//                     {
+//                         isOutsideFenceOnGrab = true; 
+//                         lastAcceptedWristPosition = initialGhostPos;
+//                     }
+//                     else
+//                     {
+//                         isOutsideFenceOnGrab = false; 
+//                     }
+
+//                     if (!isLeftPinchingGizmo) SetCubeColor(colorPosition);
+//                 }
+
+//                 Vector3 localOffset = iP.position - initialRightHandPos;
+//                 Vector3 worldOffset = transform.TransformDirection(localOffset);
+//                 Vector3 rawWristPosition = initialGhostPos + worldOffset;
+//                 rawHandPosition = rawWristPosition; 
+
+//                 if (safetyWorkspace != null)
+//                 {
+//                     Vector3 forwardDirection = targetRotation * Vector3.up; 
+                    
+//                     Vector3 fullySafeWrist = rawWristPosition;
+//                     fullySafeWrist = safetyWorkspace.ApplyLimits(fullySafeWrist);
+                    
+//                     Vector3 currentTip = fullySafeWrist + (forwardDirection * tcpZOffset);
+//                     Vector3 safeTip = safetyWorkspace.ApplyLimits(currentTip);
+//                     fullySafeWrist = safeTip - (forwardDirection * tcpZOffset);
+                    
+//                     fullySafeWrist = safetyWorkspace.ApplyLimits(fullySafeWrist);
+
+//                     if (isOutsideFenceOnGrab) 
+//                     {
+//                         float distanceToSafeZone = Vector3.Distance(rawWristPosition, fullySafeWrist);
+
+//                         if (distanceToSafeZone > 0.001f) 
+//                         {
+//                             Vector3 movementVector = rawWristPosition - lastAcceptedWristPosition;
+//                             Vector3 directionToSafety = (fullySafeWrist - rawWristPosition).normalized;
+
+//                             if (Vector3.Dot(movementVector, directionToSafety) > 0)
+//                             {
+//                                 lastAcceptedWristPosition = rawWristPosition; 
+//                             }
+//                             else
+//                             {
+//                                 rawWristPosition = lastAcceptedWristPosition; 
+//                             }
+//                         }
+//                         else 
+//                         {
+//                             isOutsideFenceOnGrab = false;
+//                             rawWristPosition = fullySafeWrist; 
+//                         }
+                        
+//                         targetPosition = rawWristPosition;
+//                     }
+//                     else 
+//                     {
+//                         targetPosition = fullySafeWrist; 
+//                     }
+
+//                     safeTargetPosition = targetPosition; 
+//                 }
+//                 else
+//                 {
+//                     targetPosition = rawWristPosition; 
+//                 }
+//             }
+//             else 
+//             {
+//                 if (isRightPinching)
+//                 {
+//                     isRightPinching = false;
+//                     if (!isLeftPinchingGizmo) SetCubeColor(colorDefault);
+//                 }
+//             }
+//         }
+//     }
+
+//     void HandleLeftHandOrientationAndGripper(XRHand leftHand)
+//     {
+//         var thumb = leftHand.GetJoint(XRHandJointID.ThumbTip);
+//         var index = leftHand.GetJoint(XRHandJointID.IndexTip);
+//         var middle = leftHand.GetJoint(XRHandJointID.MiddleTip);
+//         var ring = leftHand.GetJoint(XRHandJointID.RingTip);     
+//         var pinky = leftHand.GetJoint(XRHandJointID.LittleTip);  
+
+//         if (thumb.TryGetPose(out Pose tP) && index.TryGetPose(out Pose iP) && 
+//             middle.TryGetPose(out Pose mP) && ring.TryGetPose(out Pose rP) && pinky.TryGetPose(out Pose lP))
+//         {
+//             float distThumbIndex = Vector3.Distance(tP.position, iP.position);
+//             float distThumbMiddle = Vector3.Distance(tP.position, mP.position);
+//             float distThumbRing = Vector3.Distance(tP.position, rP.position);
+//             float distThumbPinky = Vector3.Distance(tP.position, lP.position);
+            
+//             Vector3 pinchCenterLocal = (tP.position + iP.position) / 2f;
+//             Vector3 pinchCenterWorld = transform.TransformPoint(pinchCenterLocal);
+
+//             bool isPinch = (distThumbIndex < pinchThreshold) && (distThumbRing > grabThreshold);
+            
+//             // Gesto de Virar o Pulso (Mão Esquerda)
+//             bool isLookingAtPalm = CheckPalmFacingCamera(leftHand);
+            
+//             bool isFist = (distThumbIndex < grabThreshold) && 
+//                           (distThumbMiddle < grabThreshold) && 
+//                           (distThumbRing < grabThreshold + 0.015f) && 
+//                           (distThumbPinky < grabThreshold + 0.02f);
+            
+//             bool isHandOpen = (distThumbIndex > releaseThreshold) && 
+//                               (distThumbMiddle > releaseThreshold) && 
+//                               (distThumbRing > releaseThreshold); 
+
+//             // --- LÓGICA DE VISIBILIDADE DAS ESFERAS, CUBO E CILINDROS ---
+//             if (isLookingAtPalm && !wasLookingAtLeftPalm && (Time.time - lastGizmoToggleTime > gestureCooldown))
+//             {
+//                 areGizmosVisible = !areGizmosVisible;
+                
+//                 if (!isLeftPinchingGizmo)
+//                 {
+//                     SetAllGizmosVisibility(areGizmosVisible, areGizmosVisible);
+//                 }
+
+//                 // Desliga a "Pintura" do Cubo (mantendo a física ativa)
+//                 if (cubeRenderer != null) cubeRenderer.enabled = areGizmosVisible;
+
+//                 // Desliga completamente os 3 cilindros
+//                 if (extraCylindersToToggle != null)
+//                 {
+//                     foreach (GameObject cylinder in extraCylindersToToggle)
+//                     {
+//                         if (cylinder != null) cylinder.SetActive(areGizmosVisible);
+//                     }
+//                 }
+
+//                 lastGizmoToggleTime = Time.time;
+//                 wasLookingAtLeftPalm = true;
+                
+//                 if (audioSource != null && clickSound != null) 
+//                 {
+//                     audioSource.PlayOneShot(clickSound);
+//                 }
+//             }
+//             else if (!isLookingAtPalm)
+//             {
+//                 wasLookingAtLeftPalm = false;
+//             }
+
+//             // --- LÓGICA DE MANIPULAR AS ESFERAS ---
+//             if (isPinch && areGizmosVisible)
+//             {
+//                 if (!isLeftPinchingGizmo) 
+//                 {
+//                     float distToX = Vector3.Distance(pinchCenterWorld, gizmoPitchX.position);
+//                     float distToY = Vector3.Distance(pinchCenterWorld, gizmoYawY.position);
+//                     float distToZ = Vector3.Distance(pinchCenterWorld, gizmoRollZ.position);
+
+//                     float shortestDistance = gizmoGrabRadius; 
+//                     AxisLock bestAxis = AxisLock.None;
+//                     Transform bestSphere = null;
+
+//                     if (distToX < shortestDistance) { shortestDistance = distToX; bestAxis = AxisLock.X; bestSphere = gizmoPitchX; }
+//                     if (distToY < shortestDistance) { shortestDistance = distToY; bestAxis = AxisLock.Y; bestSphere = gizmoYawY; }
+//                     if (distToZ < shortestDistance) { shortestDistance = distToZ; bestAxis = AxisLock.Z; bestSphere = gizmoRollZ; }
+
+//                     if (bestAxis != AxisLock.None)
+//                     {
+//                         lockedAxis = bestAxis;
+//                         currentGrabbedSphere = bestSphere;
+                        
+//                         isLeftPinchingGizmo = true;
+//                         initialLeftHandPos = pinchCenterLocal; 
+//                         initialGhostRot = ghostCube.rotation;
+//                         initialSpherePos = currentGrabbedSphere.localPosition; 
+                        
+//                         SetCubeColor(colorRotation);
+                        
+//                         if (audioSource != null && clickSound != null) audioSource.PlayOneShot(clickSound);
+
+//                         SetAllGizmosVisibility(false, false); 
+//                         SetSingleGizmoVisibility(lockedAxis, true); 
+//                     }
+//                 }
+                
+//                 if (isLeftPinchingGizmo)
+//                 {
+//                     currentGrabbedSphere.position = pinchCenterWorld;
+
+//                     Vector3 localOffset = pinchCenterLocal - initialLeftHandPos;
+//                     float angle = 0f;
+
+//                     if (lockedAxis == AxisLock.X) angle = localOffset.y * gizmoSensitivity;
+//                     else if (lockedAxis == AxisLock.Y) angle = localOffset.y * gizmoSensitivity; 
+//                     else if (lockedAxis == AxisLock.Z) angle = localOffset.y * gizmoSensitivity;
+
+//                     Vector3 axisVector = Vector3.zero;
+//                     if (lockedAxis == AxisLock.X) axisVector = Vector3.right;
+//                     else if (lockedAxis == AxisLock.Y) axisVector = Vector3.up;
+//                     else if (lockedAxis == AxisLock.Z) axisVector = Vector3.forward;
+
+//                     targetRotation = initialGhostRot * Quaternion.AngleAxis(angle, axisVector);
+//                 }
+//             }
+//             else 
+//             {
+//                 if (isLeftPinchingGizmo)
+//                 {
+//                     isLeftPinchingGizmo = false;
+//                     SetAllGizmosVisibility(areGizmosVisible, areGizmosVisible); 
+//                     lockedAxis = AxisLock.None;
+                    
+//                     if (currentGrabbedSphere != null)
+//                     {
+//                         currentGrabbedSphere.localPosition = initialSpherePos; 
+//                         currentGrabbedSphere = null;
+//                     }
+                    
+//                     SetCubeColor(isRightPinching ? colorPosition : colorDefault);
+
+//                     // Garante que o cubo e os cilindros voltem se você soltar a esfera
+//                     if (cubeRenderer != null) cubeRenderer.enabled = areGizmosVisible;
+//                     if (extraCylindersToToggle != null)
+//                     {
+//                         foreach (GameObject cylinder in extraCylindersToToggle)
+//                         {
+//                             if (cylinder != null) cylinder.SetActive(areGizmosVisible);
+//                         }
+//                     }
+//                 }
+//             }
+
+//             // --- LÓGICA DA GARRA DO ROBÔ ---
+//             if (!isLeftPinchingGizmo)
+//             {
+//                 if (isHandOpen)
+//                 {
+//                     readyToToggleGripper = true;
+//                 }
+
+//                 if (isFist && readyToToggleGripper && (Time.time - lastGestureTime > gestureCooldown))
+//                 {
+//                     lastGripperState = !lastGripperState;
+                    
+//                     float targetValue = lastGripperState ? gripperClosedValue : gripperOpenValue;
+//                     SendGripperCommand(targetValue);
+                    
+//                     if (audioSource != null && clickSound != null) audioSource.PlayOneShot(clickSound); 
+
+//                     lastGestureTime = Time.time;
+//                     readyToToggleGripper = false; 
+//                 }
+//             }
+//         }
+//     }
+
+//     private bool CheckPalmFacingCamera(XRHand hand)
+//     {
+//         if (!hand.isTracked || Camera.main == null) return false;
+
+//         var wrist = hand.GetJoint(XRHandJointID.Wrist);
+//         if (!wrist.TryGetPose(out Pose wristPose)) return false;
+
+//         Vector3 palmDirection = wristPose.rotation * Vector3.up; 
+//         Vector3 directionToFace = (Camera.main.transform.position - wristPose.position).normalized;
+//         float angle = Vector3.Angle(palmDirection, directionToFace);
+
+//         return angle < palmFacingThreshold;
+//     }
+// }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// // /*
+// // Arquivo 2: CartesianHandController_Input.cs (Gestos e Cinemática)
+// // Este arquivo isola toda a inteligência complexa de leitura das mãos do XR Origin, os cálculos espaciais da pinça e as restrições de giro dos anéis virtuais.
+// // */
+
+// using UnityEngine;
+// using UnityEngine.XR.Hands;
+
+// // A palavra 'partial' junta este arquivo com o principal automaticamente.
+// public partial class CartesianHandController
+// {
+//     // --- Variáveis da Válvula Unidirecional (Mão Direita) ---
+//     private Vector3 lastAcceptedWristPosition; 
+//     private bool isOutsideFenceOnGrab = false; 
+
+//     // --- Variáveis de Estado das Esferas (Mão Esquerda) ---
+//     private bool areGizmosVisible = true;
+//     private float lastGizmoToggleTime = 0f;
+    
+//     // NOVAS VARIÁVEIS PARA O GESTO DO PULSO (Substituindo o Dedo Médio)
+//     private bool wasLookingAtLeftPalm = false; 
+//     private float palmFacingThreshold = 45f; 
+
+//     void HandleRightHandPosition(XRHand rightHand)
+//     {
+//         var thumb = rightHand.GetJoint(XRHandJointID.ThumbTip);
+//         var index = rightHand.GetJoint(XRHandJointID.IndexTip);
+
+//         if (thumb.TryGetPose(out Pose tP) && index.TryGetPose(out Pose iP))
+//         {
+//             if (Vector3.Distance(tP.position, iP.position) < pinchThreshold)
+//             {
+//                 if (!isRightPinching) 
+//                 {
+//                     isRightPinching = true;
+//                     initialRightHandPos = iP.position;
+//                     initialGhostPos = ghostCube.position;
+
+//                     Vector3 forwardDir = targetRotation * Vector3.up; 
+//                     Vector3 rawTipPos = initialGhostPos + (forwardDir * tcpZOffset);
+                    
+//                     Vector3 safeWristInit = safetyWorkspace.ApplyLimits(initialGhostPos);
+//                     Vector3 safeTipInit = safetyWorkspace.ApplyLimits(rawTipPos);
+
+//                     if (Vector3.Distance(initialGhostPos, safeWristInit) > 0.001f || 
+//                         Vector3.Distance(rawTipPos, safeTipInit) > 0.001f)
+//                     {
+//                         isOutsideFenceOnGrab = true; 
+//                         lastAcceptedWristPosition = initialGhostPos;
+//                     }
+//                     else
+//                     {
+//                         isOutsideFenceOnGrab = false; 
+//                     }
+
+//                     if (!isLeftPinchingGizmo) SetCubeColor(colorPosition);
+//                 }
+
+//                 Vector3 localOffset = iP.position - initialRightHandPos;
+//                 Vector3 worldOffset = transform.TransformDirection(localOffset);
+//                 Vector3 rawWristPosition = initialGhostPos + worldOffset;
+//                 rawHandPosition = rawWristPosition; 
+
+//                 if (safetyWorkspace != null)
+//                 {
+//                     Vector3 forwardDirection = targetRotation * Vector3.up; 
+                    
+//                     Vector3 fullySafeWrist = rawWristPosition;
+//                     fullySafeWrist = safetyWorkspace.ApplyLimits(fullySafeWrist);
+                    
+//                     Vector3 currentTip = fullySafeWrist + (forwardDirection * tcpZOffset);
+//                     Vector3 safeTip = safetyWorkspace.ApplyLimits(currentTip);
+//                     fullySafeWrist = safeTip - (forwardDirection * tcpZOffset);
+                    
+//                     fullySafeWrist = safetyWorkspace.ApplyLimits(fullySafeWrist);
+
+//                     if (isOutsideFenceOnGrab) 
+//                     {
+//                         float distanceToSafeZone = Vector3.Distance(rawWristPosition, fullySafeWrist);
+
+//                         if (distanceToSafeZone > 0.001f) 
+//                         {
+//                             Vector3 movementVector = rawWristPosition - lastAcceptedWristPosition;
+//                             Vector3 directionToSafety = (fullySafeWrist - rawWristPosition).normalized;
+
+//                             if (Vector3.Dot(movementVector, directionToSafety) > 0)
+//                             {
+//                                 lastAcceptedWristPosition = rawWristPosition; 
+//                             }
+//                             else
+//                             {
+//                                 rawWristPosition = lastAcceptedWristPosition; 
+//                             }
+//                         }
+//                         else 
+//                         {
+//                             isOutsideFenceOnGrab = false;
+//                             rawWristPosition = fullySafeWrist; 
+//                         }
+                        
+//                         targetPosition = rawWristPosition;
+//                     }
+//                     else 
+//                     {
+//                         targetPosition = fullySafeWrist; 
+//                     }
+
+//                     safeTargetPosition = targetPosition; 
+//                 }
+//                 else
+//                 {
+//                     targetPosition = rawWristPosition; 
+//                 }
+//             }
+//             else 
+//             {
+//                 if (isRightPinching)
+//                 {
+//                     isRightPinching = false;
+//                     if (!isLeftPinchingGizmo) SetCubeColor(colorDefault);
+//                 }
+//             }
+//         }
+//     }
+
+//     void HandleLeftHandOrientationAndGripper(XRHand leftHand)
+//     {
+//         var thumb = leftHand.GetJoint(XRHandJointID.ThumbTip);
+//         var index = leftHand.GetJoint(XRHandJointID.IndexTip);
+//         var middle = leftHand.GetJoint(XRHandJointID.MiddleTip);
+//         var ring = leftHand.GetJoint(XRHandJointID.RingTip);     
+//         var pinky = leftHand.GetJoint(XRHandJointID.LittleTip);  
+
+//         if (thumb.TryGetPose(out Pose tP) && index.TryGetPose(out Pose iP) && 
+//             middle.TryGetPose(out Pose mP) && ring.TryGetPose(out Pose rP) && pinky.TryGetPose(out Pose lP))
+//         {
+//             float distThumbIndex = Vector3.Distance(tP.position, iP.position);
+//             float distThumbMiddle = Vector3.Distance(tP.position, mP.position);
+//             float distThumbRing = Vector3.Distance(tP.position, rP.position);
+//             float distThumbPinky = Vector3.Distance(tP.position, lP.position);
+            
+//             Vector3 pinchCenterLocal = (tP.position + iP.position) / 2f;
+//             Vector3 pinchCenterWorld = transform.TransformPoint(pinchCenterLocal);
+
+//             // Pinça Primária (Para manipular as Esferas do Gizmo)
+//             bool isPinch = (distThumbIndex < pinchThreshold) && (distThumbRing > grabThreshold);
+            
+//             // ====================================================================
+//             // SUBSTITUIÇÃO DO DEDO MÉDIO PELA PALMA DA MÃO ("Olhar as Horas")
+//             // ====================================================================
+//             bool isLookingAtPalm = CheckPalmFacingCamera(leftHand);
+            
+//             // Punho Verdadeiro (Para fechar a Garra)
+//             bool isFist = (distThumbIndex < grabThreshold) && 
+//                           (distThumbMiddle < grabThreshold) && 
+//                           (distThumbRing < grabThreshold + 0.015f) && 
+//                           (distThumbPinky < grabThreshold + 0.02f);
+            
+//             // Mão Aberta
+//             bool isHandOpen = (distThumbIndex > releaseThreshold) && 
+//                               (distThumbMiddle > releaseThreshold) && 
+//                               (distThumbRing > releaseThreshold); 
+
+//             // --- NOVA LÓGICA DE VISIBILIDADE DAS ESFERAS (WRIST TURN) ---
+//             if (isLookingAtPalm && !wasLookingAtLeftPalm && (Time.time - lastGizmoToggleTime > gestureCooldown))
+//             {
+//                 areGizmosVisible = !areGizmosVisible;
+                
+//                 if (!isLeftPinchingGizmo)
+//                 {
+//                     SetAllGizmosVisibility(areGizmosVisible, areGizmosVisible);
+//                 }
+
+//                 lastGizmoToggleTime = Time.time;
+//                 wasLookingAtLeftPalm = true;
+                
+//                 // Dispara o som apenas se a função existir
+//                 if (audioSource != null && clickSound != null) 
+//                 {
+//                     audioSource.PlayOneShot(clickSound);
+//                 }
+//             }
+//             else if (!isLookingAtPalm)
+//             {
+//                 wasLookingAtLeftPalm = false;
+//             }
+
+//             // --- LÓGICA DE MANIPULAR AS ESFERAS (Mantida intacta) ---
+//             if (isPinch && areGizmosVisible)
+//             {
+//                 if (!isLeftPinchingGizmo) 
+//                 {
+//                     float distToX = Vector3.Distance(pinchCenterWorld, gizmoPitchX.position);
+//                     float distToY = Vector3.Distance(pinchCenterWorld, gizmoYawY.position);
+//                     float distToZ = Vector3.Distance(pinchCenterWorld, gizmoRollZ.position);
+
+//                     float shortestDistance = gizmoGrabRadius; 
+//                     AxisLock bestAxis = AxisLock.None;
+//                     Transform bestSphere = null;
+
+//                     if (distToX < shortestDistance) { shortestDistance = distToX; bestAxis = AxisLock.X; bestSphere = gizmoPitchX; }
+//                     if (distToY < shortestDistance) { shortestDistance = distToY; bestAxis = AxisLock.Y; bestSphere = gizmoYawY; }
+//                     if (distToZ < shortestDistance) { shortestDistance = distToZ; bestAxis = AxisLock.Z; bestSphere = gizmoRollZ; }
+
+//                     if (bestAxis != AxisLock.None)
+//                     {
+//                         lockedAxis = bestAxis;
+//                         currentGrabbedSphere = bestSphere;
+                        
+//                         isLeftPinchingGizmo = true;
+//                         initialLeftHandPos = pinchCenterLocal; 
+//                         initialGhostRot = ghostCube.rotation;
+//                         initialSpherePos = currentGrabbedSphere.localPosition; 
+                        
+//                         SetCubeColor(colorRotation);
+                        
+//                         if (audioSource != null && clickSound != null) audioSource.PlayOneShot(clickSound);
+
+//                         SetAllGizmosVisibility(false, false); 
+//                         SetSingleGizmoVisibility(lockedAxis, true); 
+//                     }
+//                 }
+                
+//                 if (isLeftPinchingGizmo)
+//                 {
+//                     currentGrabbedSphere.position = pinchCenterWorld;
+
+//                     Vector3 localOffset = pinchCenterLocal - initialLeftHandPos;
+//                     float angle = 0f;
+
+//                     if (lockedAxis == AxisLock.X) angle = localOffset.y * gizmoSensitivity;
+//                     else if (lockedAxis == AxisLock.Y) angle = localOffset.y * gizmoSensitivity; 
+//                     else if (lockedAxis == AxisLock.Z) angle = localOffset.y * gizmoSensitivity;
+
+//                     Vector3 axisVector = Vector3.zero;
+//                     if (lockedAxis == AxisLock.X) axisVector = Vector3.right;
+//                     else if (lockedAxis == AxisLock.Y) axisVector = Vector3.up;
+//                     else if (lockedAxis == AxisLock.Z) axisVector = Vector3.forward;
+
+//                     targetRotation = initialGhostRot * Quaternion.AngleAxis(angle, axisVector);
+//                 }
+//             }
+//             else 
+//             {
+//                 if (isLeftPinchingGizmo)
+//                 {
+//                     isLeftPinchingGizmo = false;
+//                     SetAllGizmosVisibility(areGizmosVisible, areGizmosVisible); 
+//                     lockedAxis = AxisLock.None;
+                    
+//                     if (currentGrabbedSphere != null)
+//                     {
+//                         currentGrabbedSphere.localPosition = initialSpherePos; 
+//                         currentGrabbedSphere = null;
+//                     }
+                    
+//                     SetCubeColor(isRightPinching ? colorPosition : colorDefault);
+//                 }
+//             }
+
+//             // --- LÓGICA DA GARRA DO ROBÔ (Mantida intacta) ---
+//             if (!isLeftPinchingGizmo)
+//             {
+//                 if (isHandOpen)
+//                 {
+//                     readyToToggleGripper = true;
+//                 }
+
+//                 if (isFist && readyToToggleGripper && (Time.time - lastGestureTime > gestureCooldown))
+//                 {
+//                     lastGripperState = !lastGripperState;
+                    
+//                     float targetValue = lastGripperState ? gripperClosedValue : gripperOpenValue;
+                    
+//                     // Envia o comando para o ROS (chama função que deve estar no arquivo 3)
+//                     SendGripperCommand(targetValue);
+                    
+//                     if (audioSource != null && clickSound != null) audioSource.PlayOneShot(clickSound); 
+
+//                     lastGestureTime = Time.time;
+//                     readyToToggleGripper = false; 
+//                 }
+//             }
+//         }
+//     }
+
+//     // ========================================================================
+//     // NOVA FUNÇÃO: Verifica se a palma da mão esquerda está virada para o rosto
+//     // ========================================================================
+//     private bool CheckPalmFacingCamera(XRHand hand)
+//     {
+//         // Garante que existe uma câmera principal na cena para fazer o cálculo
+//         if (!hand.isTracked || Camera.main == null) return false;
+
+//         var wrist = hand.GetJoint(XRHandJointID.Wrist);
+//         if (!wrist.TryGetPose(out Pose wristPose)) return false;
+
+//         // Calcula a direção que sai da palma da mão
+//         Vector3 palmDirection = wristPose.rotation * Vector3.up; 
+        
+//         // Calcula a direção que vai do seu olho para a mão
+//         Vector3 directionToFace = (Camera.main.transform.position - wristPose.position).normalized;
+
+//         // Compara os dois ângulos
+//         float angle = Vector3.Angle(palmDirection, directionToFace);
+
+//         // Se o ângulo for menor que o limite (45 graus), considera que você está olhando
+//         return angle < palmFacingThreshold;
+//     }
+// }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// /*
+// Arquivo 2: CartesianHandController_Input.cs (Gestos e Cinemática)
+// Este arquivo isola toda a inteligência complexa de leitura das mãos do XR Origin, os cálculos espaciais da pinça e as restrições de giro dos anéis virtuais.
+// */
+
+// using UnityEngine;
+// using UnityEngine.XR.Hands;
+
+// // A palavra 'partial' junta este arquivo com o principal automaticamente.
+// public partial class CartesianHandController
+// {
+//     // --- Variáveis da Válvula Unidirecional (Mão Direita) ---
+//     private Vector3 lastAcceptedWristPosition; 
+//     private bool isOutsideFenceOnGrab = false; 
+
+//     // --- Variáveis de Estado das Esferas (Mão Esquerda) ---
+//     private bool areGizmosVisible = true;
+//     private float lastGizmoToggleTime = 0f;
+//     private bool wasLeftMiddlePinching = false;
+
+//     void HandleRightHandPosition(XRHand rightHand)
+//     {
+//         var thumb = rightHand.GetJoint(XRHandJointID.ThumbTip);
+//         var index = rightHand.GetJoint(XRHandJointID.IndexTip);
+
+//         if (thumb.TryGetPose(out Pose tP) && index.TryGetPose(out Pose iP))
+//         {
+//             if (Vector3.Distance(tP.position, iP.position) < pinchThreshold)
+//             {
+//                 if (!isRightPinching) 
+//                 {
+//                     isRightPinching = true;
+//                     initialRightHandPos = iP.position;
+//                     initialGhostPos = ghostCube.position;
+
+//                     Vector3 forwardDir = targetRotation * Vector3.up; 
+//                     Vector3 rawTipPos = initialGhostPos + (forwardDir * tcpZOffset);
+                    
+//                     Vector3 safeWristInit = safetyWorkspace.ApplyLimits(initialGhostPos);
+//                     Vector3 safeTipInit = safetyWorkspace.ApplyLimits(rawTipPos);
+
+//                     if (Vector3.Distance(initialGhostPos, safeWristInit) > 0.001f || 
+//                         Vector3.Distance(rawTipPos, safeTipInit) > 0.001f)
+//                     {
+//                         isOutsideFenceOnGrab = true; 
+//                         lastAcceptedWristPosition = initialGhostPos;
+//                     }
+//                     else
+//                     {
+//                         isOutsideFenceOnGrab = false; 
+//                     }
+
+//                     if (!isLeftPinchingGizmo) SetCubeColor(colorPosition);
+//                 }
+
+//                 Vector3 localOffset = iP.position - initialRightHandPos;
+//                 Vector3 worldOffset = transform.TransformDirection(localOffset);
+//                 Vector3 rawWristPosition = initialGhostPos + worldOffset;
+//                 rawHandPosition = rawWristPosition; 
+
+//                 if (safetyWorkspace != null)
+//                 {
+//                     Vector3 forwardDirection = targetRotation * Vector3.up; 
+                    
+//                     Vector3 fullySafeWrist = rawWristPosition;
+//                     fullySafeWrist = safetyWorkspace.ApplyLimits(fullySafeWrist);
+                    
+//                     Vector3 currentTip = fullySafeWrist + (forwardDirection * tcpZOffset);
+//                     Vector3 safeTip = safetyWorkspace.ApplyLimits(currentTip);
+//                     fullySafeWrist = safeTip - (forwardDirection * tcpZOffset);
+                    
+//                     fullySafeWrist = safetyWorkspace.ApplyLimits(fullySafeWrist);
+
+//                     if (isOutsideFenceOnGrab) 
+//                     {
+//                         float distanceToSafeZone = Vector3.Distance(rawWristPosition, fullySafeWrist);
+
+//                         if (distanceToSafeZone > 0.001f) 
+//                         {
+//                             Vector3 movementVector = rawWristPosition - lastAcceptedWristPosition;
+//                             Vector3 directionToSafety = (fullySafeWrist - rawWristPosition).normalized;
+
+//                             if (Vector3.Dot(movementVector, directionToSafety) > 0)
+//                             {
+//                                 lastAcceptedWristPosition = rawWristPosition; 
+//                             }
+//                             else
+//                             {
+//                                 rawWristPosition = lastAcceptedWristPosition; 
+//                             }
+//                         }
+//                         else 
+//                         {
+//                             isOutsideFenceOnGrab = false;
+//                             rawWristPosition = fullySafeWrist; 
+//                         }
+                        
+//                         targetPosition = rawWristPosition;
+//                     }
+//                     else 
+//                     {
+//                         targetPosition = fullySafeWrist; 
+//                     }
+
+//                     safeTargetPosition = targetPosition; 
+//                 }
+//                 else
+//                 {
+//                     targetPosition = rawWristPosition; 
+//                 }
+//             }
+//             else 
+//             {
+//                 if (isRightPinching)
+//                 {
+//                     isRightPinching = false;
+//                     if (!isLeftPinchingGizmo) SetCubeColor(colorDefault);
+//                 }
+//             }
+//         }
+//     }
+
+//     void HandleLeftHandOrientationAndGripper(XRHand leftHand)
+//     {
+//         var thumb = leftHand.GetJoint(XRHandJointID.ThumbTip);
+//         var index = leftHand.GetJoint(XRHandJointID.IndexTip);
+//         var middle = leftHand.GetJoint(XRHandJointID.MiddleTip);
+//         var ring = leftHand.GetJoint(XRHandJointID.RingTip);     
+//         var pinky = leftHand.GetJoint(XRHandJointID.LittleTip);  
+
+//         if (thumb.TryGetPose(out Pose tP) && index.TryGetPose(out Pose iP) && 
+//             middle.TryGetPose(out Pose mP) && ring.TryGetPose(out Pose rP) && pinky.TryGetPose(out Pose lP))
+//         {
+//             float distThumbIndex = Vector3.Distance(tP.position, iP.position);
+//             float distThumbMiddle = Vector3.Distance(tP.position, mP.position);
+//             float distThumbRing = Vector3.Distance(tP.position, rP.position);
+//             float distThumbPinky = Vector3.Distance(tP.position, lP.position);
+            
+//             Vector3 pinchCenterLocal = (tP.position + iP.position) / 2f;
+//             Vector3 pinchCenterWorld = transform.TransformPoint(pinchCenterLocal);
+
+//             // Pinça Primária (Esferas)
+//             bool isPinch = (distThumbIndex < pinchThreshold) && (distThumbRing > grabThreshold);
+            
+//             // Pinça Secundária (Ligar/Desligar Esferas)
+//             bool isMiddlePinch = (distThumbMiddle < pinchThreshold) && (distThumbIndex > grabThreshold);
+            
+//             // Punho Verdadeiro (Garra)
+//             bool isFist = (distThumbIndex < grabThreshold) && 
+//                           (distThumbMiddle < grabThreshold) && 
+//                           (distThumbRing < grabThreshold + 0.015f) && 
+//                           (distThumbPinky < grabThreshold + 0.02f);
+            
+//             // Mão Aberta
+//             bool isHandOpen = (distThumbIndex > releaseThreshold) && 
+//                               (distThumbMiddle > releaseThreshold) && 
+//                               (distThumbRing > releaseThreshold); 
+
+//             // --- LÓGICA DE VISIBILIDADE DAS ESFERAS ---
+//             if (isMiddlePinch && !wasLeftMiddlePinching && (Time.time - lastGizmoToggleTime > gestureCooldown))
+//             {
+//                 areGizmosVisible = !areGizmosVisible;
+                
+//                 if (!isLeftPinchingGizmo)
+//                 {
+//                     SetAllGizmosVisibility(areGizmosVisible, areGizmosVisible);
+//                 }
+
+//                 lastGizmoToggleTime = Time.time;
+//                 wasLeftMiddlePinching = true;
+//                 PlayClick();
+//             }
+//             else if (!isMiddlePinch)
+//             {
+//                 wasLeftMiddlePinching = false;
+//             }
+
+//             // --- LÓGICA DE MANIPULAR AS ESFERAS ---
+//             if (isPinch && areGizmosVisible)
+//             {
+//                 if (!isLeftPinchingGizmo) 
+//                 {
+//                     float distToX = Vector3.Distance(pinchCenterWorld, gizmoPitchX.position);
+//                     float distToY = Vector3.Distance(pinchCenterWorld, gizmoYawY.position);
+//                     float distToZ = Vector3.Distance(pinchCenterWorld, gizmoRollZ.position);
+
+//                     float shortestDistance = gizmoGrabRadius; 
+//                     AxisLock bestAxis = AxisLock.None;
+//                     Transform bestSphere = null;
+
+//                     if (distToX < shortestDistance) { shortestDistance = distToX; bestAxis = AxisLock.X; bestSphere = gizmoPitchX; }
+//                     if (distToY < shortestDistance) { shortestDistance = distToY; bestAxis = AxisLock.Y; bestSphere = gizmoYawY; }
+//                     if (distToZ < shortestDistance) { shortestDistance = distToZ; bestAxis = AxisLock.Z; bestSphere = gizmoRollZ; }
+
+//                     if (bestAxis != AxisLock.None)
+//                     {
+//                         lockedAxis = bestAxis;
+//                         currentGrabbedSphere = bestSphere;
+                        
+//                         isLeftPinchingGizmo = true;
+//                         initialLeftHandPos = pinchCenterLocal; 
+//                         initialGhostRot = ghostCube.rotation;
+//                         initialSpherePos = currentGrabbedSphere.localPosition; 
+                        
+//                         SetCubeColor(colorRotation);
+//                         PlayClick();
+
+//                         SetAllGizmosVisibility(false, false); 
+//                         SetSingleGizmoVisibility(lockedAxis, true); 
+//                     }
+//                 }
+                
+//                 if (isLeftPinchingGizmo)
+//                 {
+//                     currentGrabbedSphere.position = pinchCenterWorld;
+
+//                     Vector3 localOffset = pinchCenterLocal - initialLeftHandPos;
+//                     float angle = 0f;
+
+//                     if (lockedAxis == AxisLock.X) angle = localOffset.y * gizmoSensitivity;
+//                     else if (lockedAxis == AxisLock.Y) angle = localOffset.y * gizmoSensitivity; 
+//                     else if (lockedAxis == AxisLock.Z) angle = localOffset.y * gizmoSensitivity;
+
+//                     Vector3 axisVector = Vector3.zero;
+//                     if (lockedAxis == AxisLock.X) axisVector = Vector3.right;
+//                     else if (lockedAxis == AxisLock.Y) axisVector = Vector3.up;
+//                     else if (lockedAxis == AxisLock.Z) axisVector = Vector3.forward;
+
+//                     targetRotation = initialGhostRot * Quaternion.AngleAxis(angle, axisVector);
+//                 }
+//             }
+//             else 
+//             {
+//                 if (isLeftPinchingGizmo)
+//                 {
+//                     isLeftPinchingGizmo = false;
+//                     SetAllGizmosVisibility(areGizmosVisible, areGizmosVisible); 
+//                     lockedAxis = AxisLock.None;
+                    
+//                     if (currentGrabbedSphere != null)
+//                     {
+//                         currentGrabbedSphere.localPosition = initialSpherePos; 
+//                         currentGrabbedSphere = null;
+//                     }
+                    
+//                     SetCubeColor(isRightPinching ? colorPosition : colorDefault);
+//                 }
+//             }
+
+//             // --- LÓGICA DA GARRA DO ROBÔ ---
+//             if (!isLeftPinchingGizmo)
+//             {
+//                 if (isHandOpen)
+//                 {
+//                     readyToToggleGripper = true;
+//                 }
+
+//                 // Garra agora exige apenas o "Punho Verdadeiro" (dedos recolhidos) e estar pronta
+//                 if (isFist && readyToToggleGripper && (Time.time - lastGestureTime > gestureCooldown))
+//                 {
+//                     lastGripperState = !lastGripperState;
+                    
+//                     float targetValue = lastGripperState ? gripperClosedValue : gripperOpenValue;
+//                     SendGripperCommand(targetValue);
+//                     PlayClick(); 
+
+//                     lastGestureTime = Time.time;
+//                     readyToToggleGripper = false; 
+//                 }
+//             }
+//         }
+//     }
+// }
 
 
 
