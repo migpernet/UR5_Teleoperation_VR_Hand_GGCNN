@@ -40,15 +40,12 @@ public class TargetPointPublisher : MonoBehaviour
         Vector3 localTarget = robotBaseLink.InverseTransformPoint(unityWorldPoint);
 
         // 2. CONVERSÃO DE REFERENCIAL (EIXOS): Unity (Esquerda) -> ROS FLU (Direita)
-        // No ROS FLU (Forward, Left, Up):
-        // X do ROS = Frente (Z do Unity)
-        // Y do ROS = Esquerda (-X do Unity)
-        // Z do ROS = Cima (Y do Unity)
-        // CÓDIGO NOVO (O Alinhamento Perfeito)
+
+        // Assumindo que no seu Unity: X=Lateral, Y=Profundidade, Z=Altura
         PointMsg pointMsg = new PointMsg(
-            localTarget.x,  // X do ROS (Frente) = X do Unity (Seta Vermelha)
-            -localTarget.z, // Y do ROS (Esquerda) = Inverso do Z do Unity (Seta Azul aponta p/ Direita)
-            localTarget.y   // Z do ROS (Cima) = Y do Unity (Seta Verde)
+            localTarget.y,  // ROS X (Frente) recebe a Profundidade do Unity
+            localTarget.x, // ROS Y (Esquerda) recebe o inverso da Lateral do Unity
+            localTarget.z   // ROS Z (Cima) recebe a Altura do Unity
         );
 
         // 3. PUBLICAÇÃO
