@@ -744,7 +744,6 @@ MonoBehaviour:
   laserLength: 1.5
   pointCloudMeshFilter: {fileID: 278935876}
   targetIndicator: {fileID: 1180772413}
-  ghostGripper: {fileID: 1313780630}
 --- !u!4 &133125000
 Transform:
   m_ObjectHideFlags: 0
@@ -781,7 +780,7 @@ LineRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: 04e38fb71e123e544ac7e7aaa109f693, type: 2}
+  - {fileID: 2100000, guid: 51af688f87bd544fc8b78681d79543a2, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -876,8 +875,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4d56afd673ed1104f89380e270878d13, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  topicName: /ggcnn/target_intention_point
+  handController: {fileID: 1872765452}
   robotBaseLink: {fileID: 1486561525}
+  intentionTopic: /ggcnn/target_intention_point
+  commandTopic: unity/target_pose
+  hoverHeight: 0.4
 --- !u!1 &146689433
 GameObject:
   m_ObjectHideFlags: 0
