@@ -878,7 +878,7 @@ MonoBehaviour:
   handController: {fileID: 1872765452}
   robotBaseLink: {fileID: 1486561525}
   intentionTopic: /ggcnn/target_intention_point
-  commandTopic: unity/target_pose
+  commandTopic: /unity/target_pose_autonomous
   hoverHeight: 0.4
 --- !u!1 &146689433
 GameObject:

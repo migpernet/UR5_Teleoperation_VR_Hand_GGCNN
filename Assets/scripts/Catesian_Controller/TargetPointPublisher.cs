@@ -14,8 +14,8 @@ public class TargetPointPublisher : MonoBehaviour
     [Tooltip("Tópico onde o GGCNN lê o clique para fazer a máscara")]
     public string intentionTopic = "/ggcnn/target_intention_point";
     
-    [Tooltip("Tópico onde o seu KDL Solver escuta os comandos de pose")]
-    public string commandTopic = "unity/target_pose"; 
+    [Tooltip("Tópico para envio de pose autônoma suavizada")]
+    public string commandTopic = "unity/target_pose_autonomous";
 
     [Header("Parâmetros de Visão Ativa")]
     [Tooltip("Altura de sobrevoo em relação ao ponto clicado (Metros)")]
