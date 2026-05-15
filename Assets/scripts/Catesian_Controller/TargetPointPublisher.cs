@@ -1,8 +1,10 @@
 using UnityEngine;
 using Unity.Robotics.ROSTCPConnector;
 using RosMessageTypes.Geometry;
-using RosMessageTypes.Std; // Necessário para o HeaderMsg
+using RosMessageTypes.Std; 
+using RosMessageTypes.Sensor; // Necessário para JointStateMsg
 using System.Collections;
+using System;
 
 public class TargetPointPublisher : MonoBehaviour
 {
@@ -10,34 +12,59 @@ public class TargetPointPublisher : MonoBehaviour
     public CartesianHandController handController;
     public Transform robotBaseLink;
 
-    [Header("Configurações ROS")]
-    [Tooltip("Tópico onde o GGCNN lê o clique para fazer a máscara")]
+    [Header("Configurações ROS - Visão Ativa")]
     public string intentionTopic = "/ggcnn/target_intention_point";
+    public string commandTopic = "unity/target_pose_autonomous"; 
     
-    [Tooltip("Tópico para envio de pose autônoma suavizada")]
-    public string commandTopic = "unity/target_pose_autonomous";
+    [Header("Configurações ROS - Sincronismo (Malha Fechada)")]
+    public string jointStateTopic = "/ur5/joint_states";
 
     [Header("Parâmetros de Visão Ativa")]
-    [Tooltip("Altura de sobrevoo em relação ao ponto clicado (Metros)")]
     public float hoverHeight = 0.4f;
 
     private ROSConnection ros;
     private bool isMovingAutonomously = false;
+
+    // --- Variáveis para Malha Fechada ---
+    private readonly string[] allJointNames = new string[]
+    {
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+    };
+    private double[] currentJoints = new double[6];
+    private bool hasReceivedJoints = false;
 
     void Start()
     {
         ros = ROSConnection.GetOrCreateInstance();
         ros.RegisterPublisher<PointMsg>(intentionTopic);
         ros.RegisterPublisher<PoseStampedMsg>(commandTopic);
+        
+        // Ouvinte de juntas para saber quando o robô físico parou
+        ros.Subscribe<JointStateMsg>(jointStateTopic, JointStateCallback);
+    }
+
+    // --- LEITURA DO GAZEBO ---
+    void JointStateCallback(JointStateMsg msg)
+    {
+        for (int i = 0; i < allJointNames.Length; i++)
+        {
+            int index = Array.IndexOf(msg.name, allJointNames[i]);
+            if (index != -1)
+            {
+                currentJoints[i] = msg.position[index];
+            }
+        }
+        hasReceivedJoints = true;
     }
 
     public void PublishTargetPoint(Vector3 unityWorldPoint)
     {
-        if (robotBaseLink == null || handController == null) 
-        {
-            Debug.LogError("[Active Vision] Referências ausentes no TargetPointPublisher!");
-            return;
-        }
+        if (robotBaseLink == null || handController == null) return;
 
         if (!isMovingAutonomously)
         {
@@ -49,49 +76,203 @@ public class TargetPointPublisher : MonoBehaviour
     {
         isMovingAutonomously = true;
 
-        // 1. DESENGATA A EMBREAGEM (Pausa o Gizmo e a mão do VR)
+        // 1. DESENGATA A EMBREAGEM
         handController.PauseManualControl();
-        Debug.Log("[Active Vision] Controle pausado. Sincronizando com a convenção do KDL Solver...");
+        Debug.Log("[Active Vision] Controle pausado. Calculando cinemática...");
 
-        // 2. Define o ponto de destino no mundo (Hover)
-        // Aqui o hoverHeight é utilizado para subir a altura no eixo Y do Unity
+        // 2. CÁLCULO E ENVIO DA POSE AUTÔNOMA PARA O KDL
         Vector3 hoverWorld = new Vector3(worldTarget.x, worldTarget.y + hoverHeight, worldTarget.z);
-        
-        // 3. Converte para o referencial local da base_link
         Vector3 localHover = robotBaseLink.InverseTransformPoint(hoverWorld);
 
-        // 4. APLICA A CONVENÇÃO VITORIOSA DO CARTESIANHANDCONTROLLER
-        // x ROS = z local | y ROS = -x local | z ROS = y local
         PoseStampedMsg hoverPose = new PoseStampedMsg();
         hoverPose.header = new HeaderMsg { frame_id = "base_link" };
         
-        hoverPose.pose.position.x = localHover.z + 0.1072f;  // Profundidade
-        hoverPose.pose.position.y = -localHover.x; // Lateralidade
-        hoverPose.pose.position.z = localHover.y + 0.09f;  // Altura
+        // Aplicação do seu Offset validado
+        hoverPose.pose.position.x = localHover.z + 0.1072f;  
+        hoverPose.pose.position.y = -localHover.x; 
+        hoverPose.pose.position.z = localHover.y + 0.09f;  
 
-        // Orientação: Lente para baixo (Pitch 90º no ROS)
+        // Orientação ortogonal fixa
         hoverPose.pose.orientation.x = -1.0;
         hoverPose.pose.orientation.y = 0.0; 
         hoverPose.pose.orientation.z = 0.0;
         hoverPose.pose.orientation.w = 0.0;
 
-        // Envia para o tópico que o KDL Solver escuta (unity/target_pose)
         ros.Publish(commandTopic, hoverPose);
 
-        // 5. ENVIA O CLIQUE PARA O GGCNN (Mantendo sua lógica original de coordenadas)
+        // 3. ENVIA INTENÇÃO PARA O GGCNN
         Vector3 localTarget = robotBaseLink.InverseTransformPoint(worldTarget);
         PointMsg intentionMsg = new PointMsg(localTarget.y, localTarget.x, localTarget.z);
         ros.Publish(intentionTopic, intentionMsg);
 
-        // 6. AGUARDA O VOO FÍSICO E O PROCESSAMENTO DA IA
-        yield return new WaitForSeconds(3.0f);
+        // ========================================================
+        // 4. A ROTINA DE MALHA FECHADA (O seu sistema anti-congelamento)
+        // ========================================================
+        
+        // Aguarda meio segundo para dar tempo do ROS processar e o Gazebo começar a andar
+        yield return new WaitForSeconds(0.5f);
 
-        // 7. RETOMA O CONTROLE (Sincroniza Gizmos com a posição real do robô)
+        float timeout = 10.0f; // Tempo máximo de segurança
+        float timer = 0f;
+        
+        double[] previousJoints = new double[6];
+        Array.Copy(currentJoints, previousJoints, 6);
+        float stationaryTimer = 0f;
+
+        while (timer < timeout)
+        {
+            if (hasReceivedJoints)
+            {
+                bool isMoving = false;
+                for (int i = 0; i < 6; i++)
+                {
+                    // Checa se alguma junta mudou mais de 0.002 radianos
+                    if (Math.Abs(currentJoints[i] - previousJoints[i]) > 0.002f) 
+                    {
+                        isMoving = true;
+                        break;
+                    }
+                }
+
+                if (isMoving)
+                {
+                    stationaryTimer = 0f;
+                    Array.Copy(currentJoints, previousJoints, 6);
+                }
+                else
+                {
+                    stationaryTimer += Time.deltaTime;
+                    if (stationaryTimer >= 0.5f) // Se ficou completamente parado por 0.5s
+                    {
+                        Debug.Log("[Active Vision] Motores estabilizaram fisicamente no alvo.");
+                        break; 
+                    }
+                }
+            }
+
+            timer += Time.deltaTime;
+            yield return null; 
+        }
+
+        // =================================================================
+        // O SEGREDO DO SINCRONISMO MANTIDO
+        // =================================================================
+        yield return new WaitForSeconds(0.8f); 
+
+        // 5. RETOMA CONTROLE (Start Automático)
         handController.ResumeManualControl(false);
         isMovingAutonomously = false;
-        Debug.Log("[Active Vision] Movimento concluído e sistemas sincronizados.");
+        Debug.Log("[Active Vision] Sincronização perfeita concluída!");
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// using UnityEngine;
+// using Unity.Robotics.ROSTCPConnector;
+// using RosMessageTypes.Geometry;
+// using RosMessageTypes.Std; // Necessário para o HeaderMsg
+// using System.Collections;
+
+// public class TargetPointPublisher : MonoBehaviour
+// {
+//     [Header("Referências Core")]
+//     public CartesianHandController handController;
+//     public Transform robotBaseLink;
+
+//     [Header("Configurações ROS")]
+//     [Tooltip("Tópico onde o GGCNN lê o clique para fazer a máscara")]
+//     public string intentionTopic = "/ggcnn/target_intention_point";
+    
+//     [Tooltip("Tópico para envio de pose autônoma suavizada")]
+//     public string commandTopic = "unity/target_pose_autonomous";
+
+//     [Header("Parâmetros de Visão Ativa")]
+//     [Tooltip("Altura de sobrevoo em relação ao ponto clicado (Metros)")]
+//     public float hoverHeight = 0.4f;
+
+//     private ROSConnection ros;
+//     private bool isMovingAutonomously = false;
+
+//     void Start()
+//     {
+//         ros = ROSConnection.GetOrCreateInstance();
+//         ros.RegisterPublisher<PointMsg>(intentionTopic);
+//         ros.RegisterPublisher<PoseStampedMsg>(commandTopic);
+//     }
+
+//     public void PublishTargetPoint(Vector3 unityWorldPoint)
+//     {
+//         if (robotBaseLink == null || handController == null) 
+//         {
+//             Debug.LogError("[Active Vision] Referências ausentes no TargetPointPublisher!");
+//             return;
+//         }
+
+//         if (!isMovingAutonomously)
+//         {
+//             StartCoroutine(ActiveVisionRoutine(unityWorldPoint));
+//         }
+//     }
+
+//     private IEnumerator ActiveVisionRoutine(Vector3 worldTarget)
+//     {
+//         isMovingAutonomously = true;
+
+//         // 1. DESENGATA A EMBREAGEM (Pausa o Gizmo e a mão do VR)
+//         handController.PauseManualControl();
+//         Debug.Log("[Active Vision] Controle pausado. Sincronizando com a convenção do KDL Solver...");
+
+//         // 2. Define o ponto de destino no mundo (Hover)
+//         // Aqui o hoverHeight é utilizado para subir a altura no eixo Y do Unity
+//         Vector3 hoverWorld = new Vector3(worldTarget.x, worldTarget.y + hoverHeight, worldTarget.z);
+        
+//         // 3. Converte para o referencial local da base_link
+//         Vector3 localHover = robotBaseLink.InverseTransformPoint(hoverWorld);
+
+//         // 4. APLICA A CONVENÇÃO VITORIOSA DO CARTESIANHANDCONTROLLER
+//         // x ROS = z local | y ROS = -x local | z ROS = y local
+//         PoseStampedMsg hoverPose = new PoseStampedMsg();
+//         hoverPose.header = new HeaderMsg { frame_id = "base_link" };
+        
+//         hoverPose.pose.position.x = localHover.z + 0.1072f;  // Profundidade
+//         hoverPose.pose.position.y = -localHover.x; // Lateralidade
+//         hoverPose.pose.position.z = localHover.y + 0.09f;  // Altura
+
+//         // Orientação: Lente para baixo (Pitch 90º no ROS)
+//         hoverPose.pose.orientation.x = -1.0;
+//         hoverPose.pose.orientation.y = 0.0; 
+//         hoverPose.pose.orientation.z = 0.0;
+//         hoverPose.pose.orientation.w = 0.0;
+
+//         // Envia para o tópico que o KDL Solver escuta (unity/target_pose)
+//         ros.Publish(commandTopic, hoverPose);
+
+//         // 5. ENVIA O CLIQUE PARA O GGCNN (Mantendo sua lógica original de coordenadas)
+//         Vector3 localTarget = robotBaseLink.InverseTransformPoint(worldTarget);
+//         PointMsg intentionMsg = new PointMsg(localTarget.y, localTarget.x, localTarget.z);
+//         ros.Publish(intentionTopic, intentionMsg);
+
+//         // 6. AGUARDA O VOO FÍSICO E O PROCESSAMENTO DA IA
+//         yield return new WaitForSeconds(3.0f);
+
+//         // 7. RETOMA O CONTROLE (Sincroniza Gizmos com a posição real do robô)
+//         handController.ResumeManualControl(false);
+//         isMovingAutonomously = false;
+//         Debug.Log("[Active Vision] Movimento concluído e sistemas sincronizados.");
+//     }
+// }
 
 
 
