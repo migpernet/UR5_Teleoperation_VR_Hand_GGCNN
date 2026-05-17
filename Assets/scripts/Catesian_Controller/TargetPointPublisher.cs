@@ -20,7 +20,7 @@ public class TargetPointPublisher : MonoBehaviour
     public string jointStateTopic = "/ur5/joint_states";
 
     [Header("Parâmetros de Visão Ativa")]
-    public float hoverHeight = 0.4f;
+    public float hoverHeight = 0.40f;
 
     private ROSConnection ros;
     private bool isMovingAutonomously = false;
@@ -89,7 +89,7 @@ public class TargetPointPublisher : MonoBehaviour
         
         // Aplicação do seu Offset validado
         hoverPose.pose.position.x = localHover.z + 0.1072f;  
-        hoverPose.pose.position.y = -localHover.x; 
+        hoverPose.pose.position.y = -localHover.x + 0.05f; 
         hoverPose.pose.position.z = localHover.y + 0.09f;  
 
         // Orientação ortogonal fixa

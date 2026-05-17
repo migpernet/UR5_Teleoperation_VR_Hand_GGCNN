@@ -1,10 +1,10 @@
-
 // Este script é responsável por permitir que o operador aponte para um ponto na nuvem de pontos usando a mão direita (com um laser visual) e, ao confirmar a seleção com a mão esquerda, envie as coordenadas do ponto selecionado para o ROS. Ele também inclui feedback visual imediato (uma esfera amarela) para indicar onde o sistema detectou o clique, e uma garra fantasma que aparecerá no local da seleção para simular a posição de preensão calculada pela GGCNN. O script é projetado para ser usado em conjunto com o GGCNN_Subscriber, que receberá as poses de preensão do ROS e atualizará a garra fantasma em tempo real.
 
 using UnityEngine;
 using UnityEngine.XR.Hands;
 using UnityEngine.XR.Management;
 using System.Collections.Generic;
+using System.Collections; // Necessário para a Coroutine
 
 [RequireComponent(typeof(LineRenderer))]
 public class PointCloudSelector : MonoBehaviour
@@ -22,9 +22,12 @@ public class PointCloudSelector : MonoBehaviour
 
     [Header("Feedback Visual")]
     public Transform targetIndicator; // A esfera amarela
+    [Tooltip("Tempo em segundos que a esfera de confirmação fica visível")]
+    public float indicatorDisplayTime = 1.5f; // NOVA VARIÁVEL AQUI
 
     private LineRenderer visualRay;
     private XRHandSubsystem handSubsystem;
+    private Coroutine hideIndicatorCoroutine; // Referência para cancelar a coroutine se clicar de novo rápido
 
     void Awake()
     {
@@ -33,6 +36,12 @@ public class PointCloudSelector : MonoBehaviour
         visualRay.endWidth = 0.002f;
         visualRay.positionCount = 2;
         visualRay.enabled = false;
+        
+        // Garante que a esfera comece invisível
+        if (targetIndicator != null)
+        {
+            targetIndicator.gameObject.SetActive(false);
+        }
     }
 
     void Start()
@@ -124,11 +133,20 @@ public class PointCloudSelector : MonoBehaviour
         {
             Vector3 selectedTargetPoint = meshTransform.TransformPoint(closestLocalPoint);
 
-            // 1. POSICIONA A ESFERA INDICADORA
+            // 1. POSICIONA E LIGA A ESFERA INDICADORA
             if (targetIndicator != null)
             {
                 targetIndicator.position = selectedTargetPoint;
                 targetIndicator.gameObject.SetActive(true);
+                
+                // Se já houver uma contagem rolando, cancela ela e começa uma nova
+                if (hideIndicatorCoroutine != null)
+                {
+                    StopCoroutine(hideIndicatorCoroutine);
+                }
+                
+                // Inicia o cronômetro para esconder a esfera
+                hideIndicatorCoroutine = StartCoroutine(HideIndicatorAfterDelay());
             }
 
             // 2. ENVIA PARA O ROS
@@ -146,7 +164,183 @@ public class PointCloudSelector : MonoBehaviour
             }
         }
     }
+
+    // ========================================================
+    // COROUTINE: Esconde a esfera de feedback após X segundos
+    // ========================================================
+    private IEnumerator HideIndicatorAfterDelay()
+    {
+        yield return new WaitForSeconds(indicatorDisplayTime);
+        
+        if (targetIndicator != null)
+        {
+            targetIndicator.gameObject.SetActive(false);
+        }
+    }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// // Este script é responsável por permitir que o operador aponte para um ponto na nuvem de pontos usando a mão direita (com um laser visual) e, ao confirmar a seleção com a mão esquerda, envie as coordenadas do ponto selecionado para o ROS. Ele também inclui feedback visual imediato (uma esfera amarela) para indicar onde o sistema detectou o clique, e uma garra fantasma que aparecerá no local da seleção para simular a posição de preensão calculada pela GGCNN. O script é projetado para ser usado em conjunto com o GGCNN_Subscriber, que receberá as poses de preensão do ROS e atualizará a garra fantasma em tempo real.
+
+// using UnityEngine;
+// using UnityEngine.XR.Hands;
+// using UnityEngine.XR.Management;
+// using System.Collections.Generic;
+
+// [RequireComponent(typeof(LineRenderer))]
+// public class PointCloudSelector : MonoBehaviour
+// {
+//     [Header("Comunicação ROS")]
+//     public TargetPointPublisher rosPublisher;
+
+//     [Header("Configurações de Interação")]
+//     public Transform rayOrigin;
+//     public float maxSelectionTolerance = 0.05f;
+//     public float laserLength = 1.5f;
+
+//     [Header("Referência da Nuvem de Pontos")]
+//     public MeshFilter pointCloudMeshFilter;
+
+//     [Header("Feedback Visual")]
+//     public Transform targetIndicator; // A esfera amarela
+
+//     private LineRenderer visualRay;
+//     private XRHandSubsystem handSubsystem;
+
+//     void Awake()
+//     {
+//         visualRay = GetComponent<LineRenderer>();
+//         visualRay.startWidth = 0.002f;
+//         visualRay.endWidth = 0.002f;
+//         visualRay.positionCount = 2;
+//         visualRay.enabled = false;
+//     }
+
+//     void Start()
+//     {
+//         var subsystems = new List<XRHandSubsystem>();
+//         SubsystemManager.GetInstances(subsystems);
+//         if (subsystems.Count > 0) handSubsystem = subsystems[0];
+//     }
+
+//     void Update()
+//     {
+//         bool isPointing = false;
+//         if (handSubsystem != null && handSubsystem.running)
+//         {
+//             var rightHand = handSubsystem.rightHand;
+//             if (rightHand.isTracked) isPointing = CheckPointingPose(rightHand);
+//         }
+
+//         if (isPointing && rayOrigin != null)
+//         {
+//             visualRay.enabled = true;
+//             visualRay.SetPosition(0, rayOrigin.position);
+//             visualRay.SetPosition(1, rayOrigin.position + rayOrigin.forward * laserLength);
+//         }
+//         else
+//         {
+//             visualRay.enabled = false;
+//         }
+//     }
+
+//     private bool CheckPointingPose(XRHand hand)
+//     {
+//         var wrist = hand.GetJoint(XRHandJointID.Wrist);
+//         var indexTip = hand.GetJoint(XRHandJointID.IndexTip);
+//         var middleTip = hand.GetJoint(XRHandJointID.MiddleTip);
+//         var ringTip = hand.GetJoint(XRHandJointID.RingTip);
+//         var littleTip = hand.GetJoint(XRHandJointID.LittleTip);
+
+//         if (!wrist.TryGetPose(out Pose wristPose) || 
+//             !indexTip.TryGetPose(out Pose indexPose) ||
+//             !middleTip.TryGetPose(out Pose middlePose) || 
+//             !ringTip.TryGetPose(out Pose ringPose) ||
+//             !littleTip.TryGetPose(out Pose littlePose)) 
+//         {
+//             return false;
+//         }
+
+//         float indexDist = Vector3.Distance(wristPose.position, indexPose.position);
+//         float middleDist = Vector3.Distance(wristPose.position, middlePose.position);
+//         float ringDist = Vector3.Distance(wristPose.position, ringPose.position);
+//         float littleDist = Vector3.Distance(wristPose.position, littlePose.position);
+        
+//         return indexDist > 0.12f && middleDist < 0.10f && ringDist < 0.10f && littleDist < 0.10f;
+//     }
+
+//     public void ExecuteSelection()
+//     {
+//         if (!visualRay.enabled) return;
+
+//         if (pointCloudMeshFilter == null || pointCloudMeshFilter.sharedMesh == null) return;
+
+//         Vector3[] vertices = pointCloudMeshFilter.sharedMesh.vertices;
+//         Transform meshTransform = pointCloudMeshFilter.transform;
+
+//         Ray globalRay = new Ray(rayOrigin.position, rayOrigin.forward);
+//         Ray localRay = new Ray(meshTransform.InverseTransformPoint(globalRay.origin), meshTransform.InverseTransformDirection(globalRay.direction));
+
+//         Vector3 closestLocalPoint = Vector3.zero;
+//         float minDistanceToRay = float.MaxValue;
+//         bool foundValidPoint = false;
+
+//         for (int i = 0; i < vertices.Length; i++)
+//         {
+//             Vector3 point = vertices[i];
+//             if (point.sqrMagnitude < 0.0001f) continue;
+//             Vector3 pointToOrigin = point - localRay.origin;
+//             if (Vector3.Dot(localRay.direction, pointToOrigin) < 0) continue;
+//             float distanceToRay = Vector3.Cross(localRay.direction, pointToOrigin).magnitude;
+
+//             if (distanceToRay < maxSelectionTolerance && distanceToRay < minDistanceToRay)
+//             {
+//                 minDistanceToRay = distanceToRay;
+//                 closestLocalPoint = point;
+//                 foundValidPoint = true;
+//             }
+//         }
+
+//         if (foundValidPoint)
+//         {
+//             Vector3 selectedTargetPoint = meshTransform.TransformPoint(closestLocalPoint);
+
+//             // 1. POSICIONA A ESFERA INDICADORA
+//             if (targetIndicator != null)
+//             {
+//                 targetIndicator.position = selectedTargetPoint;
+//                 targetIndicator.gameObject.SetActive(true);
+//             }
+
+//             // 2. ENVIA PARA O ROS
+//             if (rosPublisher != null)
+//             {
+//                 rosPublisher.PublishTargetPoint(selectedTargetPoint);
+//             }
+//         }
+//         else
+//         {
+//             Debug.Log("[GGCNN] Seleção cancelada/limpa.");
+//             if (targetIndicator != null)
+//             {
+//                 targetIndicator.gameObject.SetActive(false); // Esconde a esfera amarela
+//             }
+//         }
+//     }
+// }
 
 
 
