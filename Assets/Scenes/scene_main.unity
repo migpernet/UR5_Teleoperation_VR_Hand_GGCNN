@@ -744,6 +744,7 @@ MonoBehaviour:
   laserLength: 1.5
   pointCloudMeshFilter: {fileID: 278935876}
   targetIndicator: {fileID: 1180772413}
+  indicatorDisplayTime: 1.5
 --- !u!4 &133125000
 Transform:
   m_ObjectHideFlags: 0
@@ -6745,7 +6746,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7acef0b79454c9b4dae3f8139bc4ba77, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_RosIPAddress: 192.168.0.24
+  m_RosIPAddress: 192.168.13.100
   m_RosPort: 10000
   m_ConnectOnStart: 1
   m_KeepaliveTime: 1
