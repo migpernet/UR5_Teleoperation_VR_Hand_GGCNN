@@ -16,7 +16,7 @@ public partial class CartesianHandController
         if (audioSource != null && clickSound != null) audioSource.PlayOneShot(clickSound); 
     }
 
-    void SendGripperCommand(float value)
+    public void SendGripperCommand(float value)
     {
         JointTrajectoryMsg msg = new JointTrajectoryMsg();
         msg.joint_names = new string[] { gripperJointName };

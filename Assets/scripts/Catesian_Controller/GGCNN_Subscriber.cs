@@ -146,6 +146,19 @@ public class GGCNN_Subscriber : MonoBehaviour
             visualGripperBase.gameObject.SetActive(false);
         }
     }
+
+// --- Funções de Leitura para a Rotina de Preensão ---
+    public Vector3 GetAcceptedPosition() { return targetPos; }
+    public Quaternion GetAcceptedRotation() { return targetRot; }
+    public float GetTargetWidth() { return targetWidth; }
+
+
+
+// ADICIONE ESTAS DUAS LINHAS:
+    public Vector3 GetPurePosition() { return acceptedUnityPos; }
+    public Quaternion GetPureRotation() { return acceptedUnityRot; }
+
+
 }
 
 
