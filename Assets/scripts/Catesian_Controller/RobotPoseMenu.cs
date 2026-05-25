@@ -76,13 +76,15 @@ public class RobotPoseMenu : MonoBehaviour
 
     public void GoToHome()
     {
-        double[] targetJoints = { 0.0, -1.5708, -0.05, -1.5708, 0.0, -1.5708, gripperOpenValue };  
+        // double[] targetJoints = { 0.0, -1.5708, -0.05, -1.5708, 0.0, -1.5708, gripperOpenValue }; 
+        double[] targetJoints = { 0.0, -1.5708, -0.05, -1.5708, 0.0, 1.5708, gripperOpenValue };  
         StartCoroutine(ExecutePoseRoutine(targetJoints, true)); // Requer Bolha
     }
 
     public void GoToPick()
     {
         // currentJoints[6] garante que a garra permaneça no estado que o jogador deixou
+        // double[] targetJoints = { 0.136, -1.438, -0.991, -2.056, 1.535, 1.702, currentJoints[6] };
         double[] targetJoints = { 0.136, -1.438, -0.991, -2.056, 1.535, 1.702, currentJoints[6] };
         StartCoroutine(ExecutePoseRoutine(targetJoints, false)); // Passe Livre
     }
@@ -90,6 +92,7 @@ public class RobotPoseMenu : MonoBehaviour
     public void GoToPlace()
     {
         // currentJoints[6] garante que a garra permaneça no estado que o jogador deixou
+        // double[] targetJoints = { 0.710, -1.276, -1.833, -1.531, 1.509, 2.102, currentJoints[6] };
         double[] targetJoints = { 0.710, -1.276, -1.833, -1.531, 1.509, 2.102, currentJoints[6] };
         StartCoroutine(ExecutePoseRoutine(targetJoints, false)); // Passe Livre
     }
