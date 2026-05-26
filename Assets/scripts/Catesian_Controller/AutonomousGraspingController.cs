@@ -4,7 +4,7 @@ para realizar a preensão usando os dados da GGCNN. Ele se comunica com o nó de
 as poses alvo para o robô seguir.   
 */
 
-//modelo testado em 25/05/2026
+//modelo testado em 25/05/2026, às 20:57, o backup está antes deste script
 using UnityEngine;
 using Unity.Robotics.ROSTCPConnector;
 using RosMessageTypes.Geometry;
@@ -12,9 +12,16 @@ using RosMessageTypes.Sensor;
 using RosMessageTypes.Std; 
 using System.Collections;
 using System;
+using TMPro; // <-- BIBLIOTECA DO TEXTO FLUTUANTE ADICIONADA
 
 public class AutonomousGraspingController : MonoBehaviour
 {
+    [Header("Interface HRI (Feedback)")]
+    public TextMeshPro feedbackText; // Onde você vai arrastar o seu texto 3D
+
+    [Header("Referências Visuais")]
+    public GhostGripperManager ghostManager;
+
     [Header("Dependências Core")]
     public CartesianHandController handController;
     public GGCNN_Subscriber ghostGripperController;
@@ -50,6 +57,8 @@ public class AutonomousGraspingController : MonoBehaviour
         ros = ROSConnection.GetOrCreateInstance();
         ros.RegisterPublisher<PoseStampedMsg>(commandTopic);
         ros.Subscribe<JointStateMsg>(jointStateTopic, JointStateCallback);
+
+        if (feedbackText != null) feedbackText.gameObject.SetActive(false); // Começa invisível
     }
 
     void JointStateCallback(JointStateMsg msg)
@@ -61,6 +70,33 @@ public class AutonomousGraspingController : MonoBehaviour
         }
         hasReceivedJoints = true;
     }
+
+// ==========================================
+    // FUNÇÕES DE FEEDBACK HRI (TEXTO FLUTUANTE)
+    // ==========================================
+    private void ShowFeedback(string message, Color textColor, float autoHideDelay = 0f)
+    {
+        if (feedbackText == null) return;
+
+        feedbackText.gameObject.SetActive(true);
+        
+        // A tag <mark=#000000B3> cria um fundo preto com 70% de opacidade atrás do texto!
+        feedbackText.text = $"<mark=#000000B3> {message} </mark>";
+        feedbackText.color = textColor;
+
+        if (autoHideDelay > 0f)
+        {
+            StopCoroutine("HideFeedbackAfterDelay");
+            StartCoroutine(HideFeedbackAfterDelay(autoHideDelay));
+        }
+    }
+
+    private IEnumerator HideFeedbackAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        if (feedbackText != null) feedbackText.gameObject.SetActive(false);
+    }
+    // ==========================================
 
     public void TriggerGrasping()
     {
@@ -89,35 +125,40 @@ public class AutonomousGraspingController : MonoBehaviour
 
     private IEnumerator GraspingRoutine()
     {
+        // 1. TRAVA VISUAL E MATEMÁTICA DA GARRA FANTASMA
+        if (ghostManager != null) ghostManager.LockPoseInWorld();
+        if (ghostGripperController != null) ghostGripperController.isTrackingFrozen = true; // ACABA O CABO DE GUERRA AQUI!
+
+        // 2. FEEDBACK HRI
+        ShowFeedback("Autonomous routine in progress!", new Color(1f, 0.6f, 0f)); // Laranja
+
         isExecutingGrasp = true;
         bool useFlippedOrientation = false; 
         
         StartCoroutine(GripperEnforcementLoop());
         handController.PauseManualControl();
 
-        // ETAPA 1: CAPTURA DOS DADOS LOCAIS DA PEÇA (Alvo Real Detectado pela GGCNN)
+        // ETAPA 1: CAPTURA DOS DADOS
         Vector3 graspLocalPos = ghostGripperController.GetAcceptedPosition();
         Quaternion graspLocalRot = ghostGripperController.GetAcceptedRotation();
         float widthMeters = ghostGripperController.GetTargetWidth();
 
-        // Ajusta a abertura mecânica dos dedos com base no GGCNN
         float safeOpeningMeters = Mathf.Min(widthMeters + gripperOpeningPadding, 0.14f);
         currentTrackedGripperValue = Mathf.Lerp(handController.gripperClosedValue, handController.gripperOpenValue, safeOpeningMeters / 0.14f);
         enforceGripperState = true; 
         yield return new WaitForSeconds(0.8f);
 
-        // ETAPA 2: ALINHAMENTO VERTICAL (Robô sai da pose da câmera e vai para cima do objeto)
-        // Como o vetor local está alinhado à base, adicionar Vector3.up (eixo Y) altera a altura Z no ROS
+        // ETAPA 2: ALINHAMENTO VERTICAL 
         Vector3 preGraspLocalPos = graspLocalPos + (Vector3.up * preGraspHeightOffset);
         
         Debug.Log("[Grasping Modular] Movendo robô para a vertical exata do objeto (Sobrevoo Centrado)...");
         PoseStampedMsg preGraspMsg = CreateRosPoseMessage(preGraspLocalPos, graspLocalRot, useFlippedOrientation);
         ros.Publish(commandTopic, preGraspMsg);
-        
+
         yield return new WaitForSeconds(0.4f); 
         yield return StartCoroutine(WaitForRobotToMoveAndStop());
         
-        // AUTO-RECUPERAÇÃO DE SELEÇÃO ARTICULAR
+        // AUTO-RECUPERAÇÃO
         if (!motionExecutionValid)
         {
             Debug.LogWarning("[Grasping Modular] IK Inicial Rejeitado. Rotacionando garra em 180° para alinhar...");
@@ -135,10 +176,12 @@ public class AutonomousGraspingController : MonoBehaviour
             }
         }
 
-        // ETAPA 3: DESCIDA VERTICAL PURA (Mergulho linear até o contato)
+        // ETAPA 3: DESCIDA VERTICAL (Aqui a garra desaparece suavemente!)
         Debug.Log("[Grasping Modular] Descendo em linha reta para efetuar a preensão...");
         PoseStampedMsg graspMsg = CreateRosPoseMessage(graspLocalPos, graspLocalRot, useFlippedOrientation);
         ros.Publish(commandTopic, graspMsg);
+        
+        if (ghostManager != null) ghostManager.TriggerFadeOut(); 
         
         yield return new WaitForSeconds(0.4f);
         yield return StartCoroutine(WaitForRobotToMoveAndStop());
@@ -149,38 +192,51 @@ public class AutonomousGraspingController : MonoBehaviour
             yield break;
         }
 
-        // ETAPA 4: FECHAMENTO DA GARRA (Preensão)
+        // ETAPA 4: FECHAMENTO DA GARRA
         Debug.Log("[Grasping Modular] Ponto alcançado. Efetuando fechamento mecânico...");
         currentTrackedGripperValue = handController.gripperClosedValue; 
         yield return new WaitForSeconds(1.5f); 
 
-        // ETAPA 5: IÇAMENTO (Levantar mantendo o objeto seguro)
+        // ETAPA 5: IÇAMENTO
         Debug.Log("[Grasping Modular] Suspendendo objeto verticalmente...");
-        ros.Publish(commandTopic, preGraspMsg); // Retorna com segurança para a pose da Etapa 2
+        ros.Publish(commandTopic, preGraspMsg);
         
         yield return new WaitForSeconds(0.4f);
         yield return StartCoroutine(WaitForRobotToMoveAndStop());
 
+        // FINALIZAÇÃO BEM-SUCEDIDA
         enforceGripperState = false; 
         isExecutingGrasp = false;
         handController.ResumeManualControl(false);
-        Debug.Log("<color=green>[Grasping Modular] Rotina concluída! Controle devolvido ao VR.</color>");
+        
+        // DESTRAVA A GARRA FANTASMA PARA A PRÓXIMA LEITURA
+        if (ghostManager != null) ghostManager.UnlockAndHide();
+        if (ghostGripperController != null) ghostGripperController.isTrackingFrozen = false;
+
+        // FEEDBACK HRI DE SUCESSO
+        ShowFeedback("Autonomous routine completed! Control returned to user.", Color.green, 4.0f);
+        
+        Debug.Log("<color=green>[Grasping Modular] Autonomous routine completed! Control returned to VR.</color>");
     }
 
     private void AbortRoutine(string reason)
     {
-        Debug.LogError($"<color=red>[Grasping Modular] EXECUÇÃO ABORTADA:</color> {reason}");
+        Debug.LogError($"<color=red>[Grasping Modular] ABORTADO:</color> {reason}");
         enforceGripperState = false;
         isExecutingGrasp = false;
         handController.SendGripperCommand(handController.gripperOpenValue);
         handController.ResumeManualControl(false);
-    }
 
+        // DESTRAVA A GARRA FANTASMA EM CASO DE FALHA
+        if (ghostManager != null) ghostManager.UnlockAndHide();
+        if (ghostGripperController != null) ghostGripperController.isTrackingFrozen = false;
+
+        // FEEDBACK HRI DE ERRO
+        ShowFeedback("Autonomous routine aborted: Mechanical/cinematic limit reached.", Color.red, 4.0f);
+    }
 
     private PoseStampedMsg CreateRosPoseMessage(Vector3 localPos, Quaternion localRot, bool applyFlip)
     {
-        // 1. AUTO-RECUPERAÇÃO DE SIMETRIA
-        // Se o primeiro movimento falhar, rotacionamos o Quaternion local em 180° no Yaw
         if (applyFlip)
         {
             localRot = localRot * Quaternion.Euler(0f, 180f, 0f);
@@ -189,21 +245,15 @@ public class AutonomousGraspingController : MonoBehaviour
         PoseStampedMsg msg = new PoseStampedMsg();
         msg.header = new HeaderMsg { frame_id = "base_link" };
 
-        // 2. MAPEAMENTO DE POSIÇÃO DE CONFIANÇA
-        // Mantém a translação local direta com o seu ajuste de Z (0.06f)
         msg.pose.position.x = localPos.z + ikPositionOffset.x; 
         msg.pose.position.y = -localPos.x + ikPositionOffset.y;
         msg.pose.position.z = localPos.y + ikPositionOffset.z;
 
-        // 3. CONVERSÃO DIRETA DE REFERENCIAL (Unity Mão Esquerda -> ROS Mão Direita)
-        // Eliminamos senos, cossenos e matrizes manuais. Enviamos o Quaternion local limpo,
-        // mapeando os eixos estritamente conforme a conversão nativa do ecossistema.
         float qx = -localRot.z;
         float qy = localRot.x;
         float qz = -localRot.y;
         float qw = localRot.w;
 
-        // Trava do menor caminho esférico (Shortest Path) para evitar inversões bruscas
         if (qw < 0) 
         { 
             qx = -qx; 
@@ -286,6 +336,609 @@ public class AutonomousGraspingController : MonoBehaviour
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// //modelo testado em 25/05/2026, às 19:57, o backup está antes deste script
+// using UnityEngine;
+// using Unity.Robotics.ROSTCPConnector;
+// using RosMessageTypes.Geometry;
+// using RosMessageTypes.Sensor;
+// using RosMessageTypes.Std; 
+// using System.Collections;
+// using System;
+
+// public class AutonomousGraspingController : MonoBehaviour
+// {
+//     [Header("Referências Visuais")]
+//     public GhostGripperManager ghostManager;
+
+//     [Header("Dependências Core")]
+//     public CartesianHandController handController;
+//     public GGCNN_Subscriber ghostGripperController;
+//     public Transform robotBaseLink;
+
+//     [Header("Configurações ROS")]
+//     public string commandTopic = "unity/target_pose_autonomous";
+//     public string jointStateTopic = "/ur5/joint_states";
+
+//     [Header("Calibração de Trajetória")]
+//     public float preGraspHeightOffset = 0.08f; 
+//     public float gripperOpeningPadding = 0.01f;
+    
+//     [Tooltip("Insira 0 no X e Y. No Z, use o seu ajuste de 0.06f para evitar esmagar a mesa.")]
+//     public Vector3 ikPositionOffset = new Vector3(0.0f, 0.0f, 0.06f);
+
+//     private ROSConnection ros;
+//     private bool isExecutingGrasp = false;
+//     private float currentTrackedGripperValue;
+//     private bool enforceGripperState = false;
+
+//     private readonly string[] allJointNames = new string[]
+//     {
+//         "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+//         "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"
+//     };
+//     private double[] currentJoints = new double[6];
+//     private bool hasReceivedJoints = false;
+//     private bool motionExecutionValid = false;
+
+//     void Start()
+//     {
+//         ros = ROSConnection.GetOrCreateInstance();
+//         ros.RegisterPublisher<PoseStampedMsg>(commandTopic);
+//         ros.Subscribe<JointStateMsg>(jointStateTopic, JointStateCallback);
+//     }
+
+//     void JointStateCallback(JointStateMsg msg)
+//     {
+//         for (int i = 0; i < allJointNames.Length; i++)
+//         {
+//             int index = Array.IndexOf(msg.name, allJointNames[i]);
+//             if (index != -1) currentJoints[i] = msg.position[index];
+//         }
+//         hasReceivedJoints = true;
+//     }
+
+//     public void TriggerGrasping()
+//     {
+//         if (isExecutingGrasp) return;
+
+//         if (handController == null || ghostGripperController == null || robotBaseLink == null)
+//         {
+//             Debug.LogError("[Grasping Modular] ERRO FATAL: Faltam referências no Inspector!");
+//             return;
+//         }
+
+//         if (ghostGripperController.visualGripperBase != null && ghostGripperController.visualGripperBase.gameObject.activeSelf)
+//         {
+//             StartCoroutine(GraspingRoutine());
+//         }
+//     }
+
+//     private IEnumerator GripperEnforcementLoop()
+//     {
+//         while (isExecutingGrasp)
+//         {
+//             if (enforceGripperState) handController.SendGripperCommand(currentTrackedGripperValue);
+//             yield return new WaitForSeconds(0.05f); 
+//         }
+//     }
+
+//     private IEnumerator GraspingRoutine()
+//     {
+//         if (ghostManager != null) ghostManager.LockPoseInWorld();
+
+//         isExecutingGrasp = true;
+//         bool useFlippedOrientation = false; 
+        
+//         StartCoroutine(GripperEnforcementLoop());
+//         handController.PauseManualControl();
+
+//         // ETAPA 1: CAPTURA DOS DADOS LOCAIS DA PEÇA (Alvo Real Detectado pela GGCNN)
+//         Vector3 graspLocalPos = ghostGripperController.GetAcceptedPosition();
+//         Quaternion graspLocalRot = ghostGripperController.GetAcceptedRotation();
+//         float widthMeters = ghostGripperController.GetTargetWidth();
+
+//         // Ajusta a abertura mecânica dos dedos com base no GGCNN
+//         float safeOpeningMeters = Mathf.Min(widthMeters + gripperOpeningPadding, 0.14f);
+//         currentTrackedGripperValue = Mathf.Lerp(handController.gripperClosedValue, handController.gripperOpenValue, safeOpeningMeters / 0.14f);
+//         enforceGripperState = true; 
+//         yield return new WaitForSeconds(0.8f);
+
+//         // ETAPA 2: ALINHAMENTO VERTICAL (Robô sai da pose da câmera e vai para cima do objeto)
+//         // Como o vetor local está alinhado à base, adicionar Vector3.up (eixo Y) altera a altura Z no ROS
+//         Vector3 preGraspLocalPos = graspLocalPos + (Vector3.up * preGraspHeightOffset);
+        
+//         Debug.Log("[Grasping Modular] Movendo robô para a vertical exata do objeto (Sobrevoo Centrado)...");
+//         PoseStampedMsg preGraspMsg = CreateRosPoseMessage(preGraspLocalPos, graspLocalRot, useFlippedOrientation);
+//         ros.Publish(commandTopic, preGraspMsg);
+
+//         if (ghostManager != null) ghostManager.TriggerFadeOut(); // Apaga suavemente
+        
+//         yield return new WaitForSeconds(0.4f); 
+//         yield return StartCoroutine(WaitForRobotToMoveAndStop());
+        
+//         // AUTO-RECUPERAÇÃO DE SELEÇÃO ARTICULAR
+//         if (!motionExecutionValid)
+//         {
+//             Debug.LogWarning("[Grasping Modular] IK Inicial Rejeitado. Rotacionando garra em 180° para alinhar...");
+//             useFlippedOrientation = true; 
+//             preGraspMsg = CreateRosPoseMessage(preGraspLocalPos, graspLocalRot, useFlippedOrientation);
+//             ros.Publish(commandTopic, preGraspMsg);
+            
+//             yield return new WaitForSeconds(0.4f);
+//             yield return StartCoroutine(WaitForRobotToMoveAndStop());
+
+//             if (!motionExecutionValid)
+//             {
+//                 if (ghostManager != null) ghostManager.UnlockAndHide();
+//                 AbortRoutine("Solver KDL rejeitou o alinhamento vertical sobre o objeto.");
+//                 yield break;
+//             }
+//         }
+
+//         // ETAPA 3: DESCIDA VERTICAL PURA (Mergulho linear até o contato)
+//         Debug.Log("[Grasping Modular] Descendo em linha reta para efetuar a preensão...");
+//         PoseStampedMsg graspMsg = CreateRosPoseMessage(graspLocalPos, graspLocalRot, useFlippedOrientation);
+//         ros.Publish(commandTopic, graspMsg);
+        
+//         yield return new WaitForSeconds(0.4f);
+//         yield return StartCoroutine(WaitForRobotToMoveAndStop());
+        
+//         if (!motionExecutionValid)
+//         {
+//             AbortRoutine("IK Rejeitado no ponto de contato (Mergulho abortado).");
+//             yield break;
+//         }
+
+//         // ETAPA 4: FECHAMENTO DA GARRA (Preensão)
+//         Debug.Log("[Grasping Modular] Ponto alcançado. Efetuando fechamento mecânico...");
+//         currentTrackedGripperValue = handController.gripperClosedValue; 
+//         yield return new WaitForSeconds(1.5f); 
+
+//         // ETAPA 5: IÇAMENTO (Levantar mantendo o objeto seguro)
+//         Debug.Log("[Grasping Modular] Suspendendo objeto verticalmente...");
+//         ros.Publish(commandTopic, preGraspMsg); // Retorna com segurança para a pose da Etapa 2
+        
+//         yield return new WaitForSeconds(0.4f);
+//         yield return StartCoroutine(WaitForRobotToMoveAndStop());
+
+//         enforceGripperState = false; 
+//         isExecutingGrasp = false;
+//         handController.ResumeManualControl(false);
+//         Debug.Log("<color=green>[Grasping Modular] Rotina concluída! Controle devolvido ao VR.</color>");
+//     }
+
+//     private void AbortRoutine(string reason)
+//     {
+//         Debug.LogError($"<color=red>[Grasping Modular] EXECUÇÃO ABORTADA:</color> {reason}");
+//         enforceGripperState = false;
+//         isExecutingGrasp = false;
+//         handController.SendGripperCommand(handController.gripperOpenValue);
+//         handController.ResumeManualControl(false);
+//     }
+
+
+//     private PoseStampedMsg CreateRosPoseMessage(Vector3 localPos, Quaternion localRot, bool applyFlip)
+//     {
+//         // 1. AUTO-RECUPERAÇÃO DE SIMETRIA
+//         // Se o primeiro movimento falhar, rotacionamos o Quaternion local em 180° no Yaw
+//         if (applyFlip)
+//         {
+//             localRot = localRot * Quaternion.Euler(0f, 180f, 0f);
+//         }
+
+//         PoseStampedMsg msg = new PoseStampedMsg();
+//         msg.header = new HeaderMsg { frame_id = "base_link" };
+
+//         // 2. MAPEAMENTO DE POSIÇÃO DE CONFIANÇA
+//         // Mantém a translação local direta com o seu ajuste de Z (0.06f)
+//         msg.pose.position.x = localPos.z + ikPositionOffset.x; 
+//         msg.pose.position.y = -localPos.x + ikPositionOffset.y;
+//         msg.pose.position.z = localPos.y + ikPositionOffset.z;
+
+//         // 3. CONVERSÃO DIRETA DE REFERENCIAL (Unity Mão Esquerda -> ROS Mão Direita)
+//         // Eliminamos senos, cossenos e matrizes manuais. Enviamos o Quaternion local limpo,
+//         // mapeando os eixos estritamente conforme a conversão nativa do ecossistema.
+//         float qx = -localRot.z;
+//         float qy = localRot.x;
+//         float qz = -localRot.y;
+//         float qw = localRot.w;
+
+//         // Trava do menor caminho esférico (Shortest Path) para evitar inversões bruscas
+//         if (qw < 0) 
+//         { 
+//             qx = -qx; 
+//             qy = -qy; 
+//             qz = -qz; 
+//             qw = -qw; 
+//         }
+
+//         msg.pose.orientation.x = qx;
+//         msg.pose.orientation.y = qy;
+//         msg.pose.orientation.z = qz;
+//         msg.pose.orientation.w = qw;
+
+//         return msg;
+//     }
+
+//     private IEnumerator WaitForRobotToMoveAndStop()
+//     {
+//         motionExecutionValid = false;
+//         float timeoutToStart = 3.0f; 
+//         float timer = 0f;
+//         double[] startJoints = new double[6];
+//         Array.Copy(currentJoints, startJoints, 6);
+//         bool hasStartedMoving = false;
+
+//         while (timer < timeoutToStart)
+//         {
+//             if (hasReceivedJoints)
+//             {
+//                 for (int i = 0; i < 6; i++)
+//                 {
+//                     if (Math.Abs(currentJoints[i] - startJoints[i]) > 0.001f) 
+//                     {
+//                         hasStartedMoving = true;
+//                         break;
+//                     }
+//                 }
+//             }
+//             if (hasStartedMoving) break;
+//             timer += Time.deltaTime;
+//             yield return null;
+//         }
+
+//         if (!hasStartedMoving) yield break;
+
+//         motionExecutionValid = true;
+//         float timeoutToStop = 10.0f;
+//         timer = 0f;
+//         double[] previousJoints = new double[6];
+//         Array.Copy(currentJoints, previousJoints, 6);
+//         float stationaryTimer = 0f;
+
+//         while (timer < timeoutToStop)
+//         {
+//             if (hasReceivedJoints)
+//             {
+//                 bool isMoving = false;
+//                 for (int i = 0; i < 6; i++)
+//                 {
+//                     if (Math.Abs(currentJoints[i] - previousJoints[i]) > 0.001f)
+//                     {
+//                         isMoving = true;
+//                         break;
+//                     }
+//                 }
+
+//                 if (isMoving)
+//                 {
+//                     stationaryTimer = 0f;
+//                     Array.Copy(currentJoints, previousJoints, 6);
+//                 }
+//                 else
+//                 {
+//                     stationaryTimer += Time.deltaTime;
+//                     if (stationaryTimer >= 0.3f) break; 
+//                 }
+//             }
+//             timer += Time.deltaTime;
+//             yield return null;
+//         }
+//     }
+// }
+
+
+
+
+
+
+
+
+
+
+
+
+
+// //modelo testado em 25/05/2026, às 11:30, o backup está antes deste script
+// using UnityEngine;
+// using Unity.Robotics.ROSTCPConnector;
+// using RosMessageTypes.Geometry;
+// using RosMessageTypes.Sensor;
+// using RosMessageTypes.Std; 
+// using System.Collections;
+// using System;
+
+// public class AutonomousGraspingController : MonoBehaviour
+// {
+//     [Header("Dependências Core")]
+//     public CartesianHandController handController;
+//     public GGCNN_Subscriber ghostGripperController;
+//     public Transform robotBaseLink;
+
+//     [Header("Configurações ROS")]
+//     public string commandTopic = "unity/target_pose_autonomous";
+//     public string jointStateTopic = "/ur5/joint_states";
+
+//     [Header("Calibração de Trajetória")]
+//     public float preGraspHeightOffset = 0.08f; 
+//     public float gripperOpeningPadding = 0.01f;
+    
+//     [Tooltip("Insira 0 no X e Y. No Z, use o seu ajuste de 0.06f para evitar esmagar a mesa.")]
+//     public Vector3 ikPositionOffset = new Vector3(0.0f, 0.0f, 0.06f);
+
+//     private ROSConnection ros;
+//     private bool isExecutingGrasp = false;
+//     private float currentTrackedGripperValue;
+//     private bool enforceGripperState = false;
+
+//     private readonly string[] allJointNames = new string[]
+//     {
+//         "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+//         "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"
+//     };
+//     private double[] currentJoints = new double[6];
+//     private bool hasReceivedJoints = false;
+//     private bool motionExecutionValid = false;
+
+//     void Start()
+//     {
+//         ros = ROSConnection.GetOrCreateInstance();
+//         ros.RegisterPublisher<PoseStampedMsg>(commandTopic);
+//         ros.Subscribe<JointStateMsg>(jointStateTopic, JointStateCallback);
+//     }
+
+//     void JointStateCallback(JointStateMsg msg)
+//     {
+//         for (int i = 0; i < allJointNames.Length; i++)
+//         {
+//             int index = Array.IndexOf(msg.name, allJointNames[i]);
+//             if (index != -1) currentJoints[i] = msg.position[index];
+//         }
+//         hasReceivedJoints = true;
+//     }
+
+//     public void TriggerGrasping()
+//     {
+//         if (isExecutingGrasp) return;
+
+//         if (handController == null || ghostGripperController == null || robotBaseLink == null)
+//         {
+//             Debug.LogError("[Grasping Modular] ERRO FATAL: Faltam referências no Inspector!");
+//             return;
+//         }
+
+//         if (ghostGripperController.visualGripperBase != null && ghostGripperController.visualGripperBase.gameObject.activeSelf)
+//         {
+//             StartCoroutine(GraspingRoutine());
+//         }
+//     }
+
+//     private IEnumerator GripperEnforcementLoop()
+//     {
+//         while (isExecutingGrasp)
+//         {
+//             if (enforceGripperState) handController.SendGripperCommand(currentTrackedGripperValue);
+//             yield return new WaitForSeconds(0.05f); 
+//         }
+//     }
+
+//     private IEnumerator GraspingRoutine()
+//     {
+//         isExecutingGrasp = true;
+//         bool useFlippedOrientation = false; 
+        
+//         StartCoroutine(GripperEnforcementLoop());
+//         handController.PauseManualControl();
+
+//         // ETAPA 1: CAPTURA DOS DADOS LOCAIS DA PEÇA (Alvo Real Detectado pela GGCNN)
+//         Vector3 graspLocalPos = ghostGripperController.GetAcceptedPosition();
+//         Quaternion graspLocalRot = ghostGripperController.GetAcceptedRotation();
+//         float widthMeters = ghostGripperController.GetTargetWidth();
+
+//         // Ajusta a abertura mecânica dos dedos com base no GGCNN
+//         float safeOpeningMeters = Mathf.Min(widthMeters + gripperOpeningPadding, 0.14f);
+//         currentTrackedGripperValue = Mathf.Lerp(handController.gripperClosedValue, handController.gripperOpenValue, safeOpeningMeters / 0.14f);
+//         enforceGripperState = true; 
+//         yield return new WaitForSeconds(0.8f);
+
+//         // ETAPA 2: ALINHAMENTO VERTICAL (Robô sai da pose da câmera e vai para cima do objeto)
+//         // Como o vetor local está alinhado à base, adicionar Vector3.up (eixo Y) altera a altura Z no ROS
+//         Vector3 preGraspLocalPos = graspLocalPos + (Vector3.up * preGraspHeightOffset);
+        
+//         Debug.Log("[Grasping Modular] Movendo robô para a vertical exata do objeto (Sobrevoo Centrado)...");
+//         PoseStampedMsg preGraspMsg = CreateRosPoseMessage(preGraspLocalPos, graspLocalRot, useFlippedOrientation);
+//         ros.Publish(commandTopic, preGraspMsg);
+        
+//         yield return new WaitForSeconds(0.4f); 
+//         yield return StartCoroutine(WaitForRobotToMoveAndStop());
+        
+//         // AUTO-RECUPERAÇÃO DE SELEÇÃO ARTICULAR
+//         if (!motionExecutionValid)
+//         {
+//             Debug.LogWarning("[Grasping Modular] IK Inicial Rejeitado. Rotacionando garra em 180° para alinhar...");
+//             useFlippedOrientation = true; 
+//             preGraspMsg = CreateRosPoseMessage(preGraspLocalPos, graspLocalRot, useFlippedOrientation);
+//             ros.Publish(commandTopic, preGraspMsg);
+            
+//             yield return new WaitForSeconds(0.4f);
+//             yield return StartCoroutine(WaitForRobotToMoveAndStop());
+
+//             if (!motionExecutionValid)
+//             {
+//                 AbortRoutine("Solver KDL rejeitou o alinhamento vertical sobre o objeto.");
+//                 yield break;
+//             }
+//         }
+
+//         // ETAPA 3: DESCIDA VERTICAL PURA (Mergulho linear até o contato)
+//         Debug.Log("[Grasping Modular] Descendo em linha reta para efetuar a preensão...");
+//         PoseStampedMsg graspMsg = CreateRosPoseMessage(graspLocalPos, graspLocalRot, useFlippedOrientation);
+//         ros.Publish(commandTopic, graspMsg);
+        
+//         yield return new WaitForSeconds(0.4f);
+//         yield return StartCoroutine(WaitForRobotToMoveAndStop());
+        
+//         if (!motionExecutionValid)
+//         {
+//             AbortRoutine("IK Rejeitado no ponto de contato (Mergulho abortado).");
+//             yield break;
+//         }
+
+//         // ETAPA 4: FECHAMENTO DA GARRA (Preensão)
+//         Debug.Log("[Grasping Modular] Ponto alcançado. Efetuando fechamento mecânico...");
+//         currentTrackedGripperValue = handController.gripperClosedValue; 
+//         yield return new WaitForSeconds(1.5f); 
+
+//         // ETAPA 5: IÇAMENTO (Levantar mantendo o objeto seguro)
+//         Debug.Log("[Grasping Modular] Suspendendo objeto verticalmente...");
+//         ros.Publish(commandTopic, preGraspMsg); // Retorna com segurança para a pose da Etapa 2
+        
+//         yield return new WaitForSeconds(0.4f);
+//         yield return StartCoroutine(WaitForRobotToMoveAndStop());
+
+//         enforceGripperState = false; 
+//         isExecutingGrasp = false;
+//         handController.ResumeManualControl(false);
+//         Debug.Log("<color=green>[Grasping Modular] Rotina concluída! Controle devolvido ao VR.</color>");
+//     }
+
+//     private void AbortRoutine(string reason)
+//     {
+//         Debug.LogError($"<color=red>[Grasping Modular] EXECUÇÃO ABORTADA:</color> {reason}");
+//         enforceGripperState = false;
+//         isExecutingGrasp = false;
+//         handController.SendGripperCommand(handController.gripperOpenValue);
+//         handController.ResumeManualControl(false);
+//     }
+
+
+//     private PoseStampedMsg CreateRosPoseMessage(Vector3 localPos, Quaternion localRot, bool applyFlip)
+//     {
+//         // 1. AUTO-RECUPERAÇÃO DE SIMETRIA
+//         // Se o primeiro movimento falhar, rotacionamos o Quaternion local em 180° no Yaw
+//         if (applyFlip)
+//         {
+//             localRot = localRot * Quaternion.Euler(0f, 180f, 0f);
+//         }
+
+//         PoseStampedMsg msg = new PoseStampedMsg();
+//         msg.header = new HeaderMsg { frame_id = "base_link" };
+
+//         // 2. MAPEAMENTO DE POSIÇÃO DE CONFIANÇA
+//         // Mantém a translação local direta com o seu ajuste de Z (0.06f)
+//         msg.pose.position.x = localPos.z + ikPositionOffset.x; 
+//         msg.pose.position.y = -localPos.x + ikPositionOffset.y;
+//         msg.pose.position.z = localPos.y + ikPositionOffset.z;
+
+//         // 3. CONVERSÃO DIRETA DE REFERENCIAL (Unity Mão Esquerda -> ROS Mão Direita)
+//         // Eliminamos senos, cossenos e matrizes manuais. Enviamos o Quaternion local limpo,
+//         // mapeando os eixos estritamente conforme a conversão nativa do ecossistema.
+//         float qx = -localRot.z;
+//         float qy = localRot.x;
+//         float qz = -localRot.y;
+//         float qw = localRot.w;
+
+//         // Trava do menor caminho esférico (Shortest Path) para evitar inversões bruscas
+//         if (qw < 0) 
+//         { 
+//             qx = -qx; 
+//             qy = -qy; 
+//             qz = -qz; 
+//             qw = -qw; 
+//         }
+
+//         msg.pose.orientation.x = qx;
+//         msg.pose.orientation.y = qy;
+//         msg.pose.orientation.z = qz;
+//         msg.pose.orientation.w = qw;
+
+//         return msg;
+//     }
+
+//     private IEnumerator WaitForRobotToMoveAndStop()
+//     {
+//         motionExecutionValid = false;
+//         float timeoutToStart = 3.0f; 
+//         float timer = 0f;
+//         double[] startJoints = new double[6];
+//         Array.Copy(currentJoints, startJoints, 6);
+//         bool hasStartedMoving = false;
+
+//         while (timer < timeoutToStart)
+//         {
+//             if (hasReceivedJoints)
+//             {
+//                 for (int i = 0; i < 6; i++)
+//                 {
+//                     if (Math.Abs(currentJoints[i] - startJoints[i]) > 0.001f) 
+//                     {
+//                         hasStartedMoving = true;
+//                         break;
+//                     }
+//                 }
+//             }
+//             if (hasStartedMoving) break;
+//             timer += Time.deltaTime;
+//             yield return null;
+//         }
+
+//         if (!hasStartedMoving) yield break;
+
+//         motionExecutionValid = true;
+//         float timeoutToStop = 10.0f;
+//         timer = 0f;
+//         double[] previousJoints = new double[6];
+//         Array.Copy(currentJoints, previousJoints, 6);
+//         float stationaryTimer = 0f;
+
+//         while (timer < timeoutToStop)
+//         {
+//             if (hasReceivedJoints)
+//             {
+//                 bool isMoving = false;
+//                 for (int i = 0; i < 6; i++)
+//                 {
+//                     if (Math.Abs(currentJoints[i] - previousJoints[i]) > 0.001f)
+//                     {
+//                         isMoving = true;
+//                         break;
+//                     }
+//                 }
+
+//                 if (isMoving)
+//                 {
+//                     stationaryTimer = 0f;
+//                     Array.Copy(currentJoints, previousJoints, 6);
+//                 }
+//                 else
+//                 {
+//                     stationaryTimer += Time.deltaTime;
+//                     if (stationaryTimer >= 0.3f) break; 
+//                 }
+//             }
+//             timer += Time.deltaTime;
+//             yield return null;
+//         }
+//     }
+// }
 
 
 

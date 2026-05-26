@@ -1,5 +1,7 @@
 // Este script é responsável por receber as poses de preensão calculadas pela GGCNN via ROS e atualizar a posição, rotação e abertura da garra holográfica no Unity. Ele também inclui opções de suavização para evitar jitter e correções para alinhar o modelo 3D com o sistema de coordenadas do ROS.
 
+// Modificado em 25/05/2026, às 20:48, o backup está antes deste script
+
 using UnityEngine;
 using Unity.Robotics.ROSTCPConnector;
 using Unity.Robotics.ROSTCPConnector.ROSGeometry;
@@ -22,16 +24,10 @@ public class GGCNN_Subscriber : MonoBehaviour
     public Vector3 tcpOffset = new Vector3(0, 0, 0);
 
     [Header("Filtros Anti-Jitter (Zona Morta)")]
-    [Tooltip("Distância mínima (em metros) para a garra atualizar a posição. Ex: 0.015 = 1.5 cm")]
     public float positionTolerance = 0.015f; 
-    [Tooltip("Ângulo mínimo (em graus) para a garra atualizar a rotação. Ex: 5 = 5 graus")]
     public float rotationTolerance = 5.0f;
 
-    [Header("Controle de Visibilidade")]
-    [Tooltip("Tempo em segundos para esconder a garra se a IA perder o objeto")]
-    public float messageTimeout = 20f; // Aumentado para evitar o "pisca-pisca. Valor padrão recomendado: 1.5 segundos."
-
-    // Variáveis de Estado Interno (Trava de Posição)
+    // Variáveis de Estado Interno
     private Vector3 acceptedUnityPos;
     private Quaternion acceptedUnityRot;
 
@@ -41,14 +37,12 @@ public class GGCNN_Subscriber : MonoBehaviour
     private float targetWidth = 0.05f;
     private bool hasReceivedPose = false;
     
-    // Variáveis de Controle de Exibição
-    private float lastMessageTime;
-    private bool isAllowedToShow = true;
+    // --- NOVA TRAVA DE MOVIMENTO ---
+    [HideInInspector] 
+    public bool isTrackingFrozen = false; 
 
     void Start()
     {
-        if (visualGripperBase != null) visualGripperBase.gameObject.SetActive(false);
-
         var ros = ROSConnection.GetOrCreateInstance();
         ros.Subscribe<PoseStampedMsg>(poseTopic, ReceivePose);
         ros.Subscribe<Float32Msg>(widthTopic, ReceiveWidth);
@@ -56,29 +50,19 @@ public class GGCNN_Subscriber : MonoBehaviour
 
     void ReceivePose(PoseStampedMsg msg)
     {
-        // Atualiza o relógio sinalizando que o ROS está vivo
-        lastMessageTime = Time.time;
-
-        // Conversão Nativa do ROS para Unity
         Vector3 incomingUnityPos = msg.pose.position.From<FLU>();
         Quaternion incomingUnityRot = msg.pose.orientation.From<FLU>();
 
-        // ========================================================
-        // FILTRO DE ZONA MORTA (ANTI-JITTER / LATCHING)
-        // ========================================================
         if (!hasReceivedPose)
         {
-            // Primeiro frame: Aceita imediatamente
             acceptedUnityPos = incomingUnityPos;
             acceptedUnityRot = incomingUnityRot;
         }
         else
         {
-            // Verifica a diferença entre a nova pose da IA e a pose que a garra está usando
             float dist = Vector3.Distance(acceptedUnityPos, incomingUnityPos);
             float angle = Quaternion.Angle(acceptedUnityRot, incomingUnityRot);
 
-            // Só atualiza o alvo se a IA sugerir uma mudança maior que a tolerância (ruído)
             if (dist > positionTolerance || angle > rotationTolerance)
             {
                 acceptedUnityPos = incomingUnityPos;
@@ -86,11 +70,9 @@ public class GGCNN_Subscriber : MonoBehaviour
             }
         }
 
-        // Aplicação dos Offsets do modelo 3D sobre a pose aceita
         targetRot = acceptedUnityRot * Quaternion.Euler(cadFrameCorrection);
         targetPos = acceptedUnityPos + (targetRot * tcpOffset);
 
-        // Snap inicial
         if (!hasReceivedPose && visualGripperBase != null)
         {
             visualGripperBase.localPosition = targetPos;
@@ -98,17 +80,10 @@ public class GGCNN_Subscriber : MonoBehaviour
         }
 
         hasReceivedPose = true;
-
-        // Garante que está visível se for permitido
-        if (isAllowedToShow && visualGripperBase != null && !visualGripperBase.gameObject.activeSelf)
-        {
-            visualGripperBase.gameObject.SetActive(true);
-        }
     }
 
     void ReceiveWidth(Float32Msg msg)
     {
-        // Filtro passa-baixa simples para a largura dos dedos (evita tremulação)
         targetWidth = Mathf.Lerp(targetWidth, msg.data, 0.5f);
     }
 
@@ -116,50 +91,189 @@ public class GGCNN_Subscriber : MonoBehaviour
     {
         if (!hasReceivedPose || visualGripperBase == null) return;
 
-        // --- CONTROLE DE PERSISTÊNCIA ---
-        if (visualGripperBase.gameObject.activeSelf)
+        // O SEGREDO DO CONGELAMENTO: Se a rotina de preensão começou, paramos de atualizar o Transform!
+        if (isTrackingFrozen) return;
+
+        visualGripperBase.localPosition = Vector3.Lerp(visualGripperBase.localPosition, targetPos, Time.deltaTime * lerpSpeed);
+        visualGripperBase.localRotation = Quaternion.Slerp(visualGripperBase.localRotation, targetRot, Time.deltaTime * lerpSpeed);
+
+        if (fingerLeft != null && fingerRight != null)
         {
-            if (Time.time - lastMessageTime > messageTimeout || !isAllowedToShow)
-            {
-                visualGripperBase.gameObject.SetActive(false);
-                return; 
-            }
-
-            // Movimentação Suave para o alvo filtrado
-            visualGripperBase.localPosition = Vector3.Lerp(visualGripperBase.localPosition, targetPos, Time.deltaTime * lerpSpeed);
-            visualGripperBase.localRotation = Quaternion.Slerp(visualGripperBase.localRotation, targetRot, Time.deltaTime * lerpSpeed);
-
-            if (fingerLeft != null && fingerRight != null)
-            {
-                float halfWidth = targetWidth / 2f;
-                fingerLeft.localPosition = new Vector3(-halfWidth, fingerLeft.localPosition.y, fingerLeft.localPosition.z);
-                fingerRight.localPosition = new Vector3(halfWidth, fingerRight.localPosition.y, fingerRight.localPosition.z);
-            }
+            float halfWidth = targetWidth / 2f;
+            fingerLeft.localPosition = new Vector3(-halfWidth, fingerLeft.localPosition.y, fingerLeft.localPosition.z);
+            fingerRight.localPosition = new Vector3(halfWidth, fingerRight.localPosition.y, fingerRight.localPosition.z);
         }
     }
 
-    public void SetVisibilityAllowance(bool allowed)
-    {
-        isAllowedToShow = allowed;
-        if (!allowed && visualGripperBase != null)
-        {
-            visualGripperBase.gameObject.SetActive(false);
-        }
-    }
-
-// --- Funções de Leitura para a Rotina de Preensão ---
     public Vector3 GetAcceptedPosition() { return targetPos; }
     public Quaternion GetAcceptedRotation() { return targetRot; }
     public float GetTargetWidth() { return targetWidth; }
-
-
-
-// ADICIONE ESTAS DUAS LINHAS:
     public Vector3 GetPurePosition() { return acceptedUnityPos; }
     public Quaternion GetPureRotation() { return acceptedUnityRot; }
-
-
 }
+
+
+
+// using UnityEngine;
+// using Unity.Robotics.ROSTCPConnector;
+// using Unity.Robotics.ROSTCPConnector.ROSGeometry;
+// using RosMessageTypes.Geometry;
+// using RosMessageTypes.Std;
+
+// public class GGCNN_Subscriber : MonoBehaviour
+// {
+//     [Header("Configurações de Tópicos ROS")]
+//     public string poseTopic = "/ggcnn/unity_target_pose";
+//     public string widthTopic = "/ggcnn/unity_gripper_width";
+    
+//     [Header("Referências da Hierarquia")]
+//     public Transform visualGripperBase;
+//     public Transform fingerLeft, fingerRight;
+
+//     [Header("Matemática e Calibração")]
+//     public float lerpSpeed = 15f; 
+//     public Vector3 cadFrameCorrection = new Vector3(0, 0, 0);
+//     public Vector3 tcpOffset = new Vector3(0, 0, 0);
+
+//     [Header("Filtros Anti-Jitter (Zona Morta)")]
+//     [Tooltip("Distância mínima (em metros) para a garra atualizar a posição. Ex: 0.015 = 1.5 cm")]
+//     public float positionTolerance = 0.015f; 
+//     [Tooltip("Ângulo mínimo (em graus) para a garra atualizar a rotação. Ex: 5 = 5 graus")]
+//     public float rotationTolerance = 5.0f;
+
+//     [Header("Controle de Visibilidade")]
+//     [Tooltip("Tempo em segundos para esconder a garra se a IA perder o objeto")]
+//     public float messageTimeout = 20f; // Aumentado para evitar o "pisca-pisca. Valor padrão recomendado: 1.5 segundos."
+
+//     // Variáveis de Estado Interno (Trava de Posição)
+//     private Vector3 acceptedUnityPos;
+//     private Quaternion acceptedUnityRot;
+
+//     // Variáveis de Destino Final
+//     private Vector3 targetPos;
+//     private Quaternion targetRot;
+//     private float targetWidth = 0.05f;
+//     private bool hasReceivedPose = false;
+    
+//     // Variáveis de Controle de Exibição
+//     private float lastMessageTime;
+//     private bool isAllowedToShow = true;
+
+//     void Start()
+//     {
+//         if (visualGripperBase != null) visualGripperBase.gameObject.SetActive(false);
+
+//         var ros = ROSConnection.GetOrCreateInstance();
+//         ros.Subscribe<PoseStampedMsg>(poseTopic, ReceivePose);
+//         ros.Subscribe<Float32Msg>(widthTopic, ReceiveWidth);
+//     }
+
+//     void ReceivePose(PoseStampedMsg msg)
+//     {
+//         // Atualiza o relógio sinalizando que o ROS está vivo
+//         lastMessageTime = Time.time;
+
+//         // Conversão Nativa do ROS para Unity
+//         Vector3 incomingUnityPos = msg.pose.position.From<FLU>();
+//         Quaternion incomingUnityRot = msg.pose.orientation.From<FLU>();
+
+//         // ========================================================
+//         // FILTRO DE ZONA MORTA (ANTI-JITTER / LATCHING)
+//         // ========================================================
+//         if (!hasReceivedPose)
+//         {
+//             // Primeiro frame: Aceita imediatamente
+//             acceptedUnityPos = incomingUnityPos;
+//             acceptedUnityRot = incomingUnityRot;
+//         }
+//         else
+//         {
+//             // Verifica a diferença entre a nova pose da IA e a pose que a garra está usando
+//             float dist = Vector3.Distance(acceptedUnityPos, incomingUnityPos);
+//             float angle = Quaternion.Angle(acceptedUnityRot, incomingUnityRot);
+
+//             // Só atualiza o alvo se a IA sugerir uma mudança maior que a tolerância (ruído)
+//             if (dist > positionTolerance || angle > rotationTolerance)
+//             {
+//                 acceptedUnityPos = incomingUnityPos;
+//                 acceptedUnityRot = incomingUnityRot;
+//             }
+//         }
+
+//         // Aplicação dos Offsets do modelo 3D sobre a pose aceita
+//         targetRot = acceptedUnityRot * Quaternion.Euler(cadFrameCorrection);
+//         targetPos = acceptedUnityPos + (targetRot * tcpOffset);
+
+//         // Snap inicial
+//         if (!hasReceivedPose && visualGripperBase != null)
+//         {
+//             visualGripperBase.localPosition = targetPos;
+//             visualGripperBase.localRotation = targetRot;
+//         }
+
+//         hasReceivedPose = true;
+
+//         // Garante que está visível se for permitido
+//         if (isAllowedToShow && visualGripperBase != null && !visualGripperBase.gameObject.activeSelf)
+//         {
+//             visualGripperBase.gameObject.SetActive(true);
+//         }
+//     }
+
+//     void ReceiveWidth(Float32Msg msg)
+//     {
+//         // Filtro passa-baixa simples para a largura dos dedos (evita tremulação)
+//         targetWidth = Mathf.Lerp(targetWidth, msg.data, 0.5f);
+//     }
+
+//     void Update()
+//     {
+//         if (!hasReceivedPose || visualGripperBase == null) return;
+
+//         // --- CONTROLE DE PERSISTÊNCIA ---
+//         if (visualGripperBase.gameObject.activeSelf)
+//         {
+//             if (Time.time - lastMessageTime > messageTimeout || !isAllowedToShow)
+//             {
+//                 visualGripperBase.gameObject.SetActive(false);
+//                 return; 
+//             }
+
+//             // Movimentação Suave para o alvo filtrado
+//             visualGripperBase.localPosition = Vector3.Lerp(visualGripperBase.localPosition, targetPos, Time.deltaTime * lerpSpeed);
+//             visualGripperBase.localRotation = Quaternion.Slerp(visualGripperBase.localRotation, targetRot, Time.deltaTime * lerpSpeed);
+
+//             if (fingerLeft != null && fingerRight != null)
+//             {
+//                 float halfWidth = targetWidth / 2f;
+//                 fingerLeft.localPosition = new Vector3(-halfWidth, fingerLeft.localPosition.y, fingerLeft.localPosition.z);
+//                 fingerRight.localPosition = new Vector3(halfWidth, fingerRight.localPosition.y, fingerRight.localPosition.z);
+//             }
+//         }
+//     }
+
+//     public void SetVisibilityAllowance(bool allowed)
+//     {
+//         isAllowedToShow = allowed;
+//         if (!allowed && visualGripperBase != null)
+//         {
+//             visualGripperBase.gameObject.SetActive(false);
+//         }
+//     }
+
+// // --- Funções de Leitura para a Rotina de Preensão ---
+//     public Vector3 GetAcceptedPosition() { return targetPos; }
+//     public Quaternion GetAcceptedRotation() { return targetRot; }
+//     public float GetTargetWidth() { return targetWidth; }
+
+
+
+// // ADICIONE ESTAS DUAS LINHAS:
+//     public Vector3 GetPurePosition() { return acceptedUnityPos; }
+//     public Quaternion GetPureRotation() { return acceptedUnityRot; }
+
+
+// }
 
 
 

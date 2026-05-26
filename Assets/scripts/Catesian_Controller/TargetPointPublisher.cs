@@ -1,3 +1,5 @@
+// Alterado em 25/05/2026, às 20:17, o backup está antes deste script
+
 using UnityEngine;
 using Unity.Robotics.ROSTCPConnector;
 using RosMessageTypes.Geometry;
@@ -11,7 +13,7 @@ public class TargetPointPublisher : MonoBehaviour
     [Header("Referências Core")]
     public CartesianHandController handController;
     public Transform robotBaseLink;
-    public GGCNN_Subscriber ghostGripperController; // <-- NOVA REFERÊNCIA AQUI
+    // A referência ao ghostGripperController foi removida daqui!
 
     [Header("Configurações ROS - Visão Ativa")]
     public string intentionTopic = "/ggcnn/target_intention_point";
@@ -76,11 +78,6 @@ public class TargetPointPublisher : MonoBehaviour
     private IEnumerator ActiveVisionRoutine(Vector3 worldTarget)
     {
         isMovingAutonomously = true;
-
-        // --- SUPRESSÃO VISUAL ---
-        // Desliga a garra fantasma imediatamente ao começar o voo do robô
-        if (ghostGripperController != null) 
-            ghostGripperController.SetVisibilityAllowance(false);
 
         // 1. DESENGATA A EMBREAGEM
         handController.PauseManualControl();
@@ -167,19 +164,210 @@ public class TargetPointPublisher : MonoBehaviour
         // enviar uma imagem limpa para a GGCNN processar
         yield return new WaitForSeconds(0.8f); 
 
-        // --- LIBERAÇÃO VISUAL ---
-        // O robô está estável, a imagem está limpa. Libera o desenho da garra fantasma!
-        if (ghostGripperController != null) 
-            ghostGripperController.SetVisibilityAllowance(true);
-
         // 5. RETOMA CONTROLE (Start Automático)
         handController.ResumeManualControl(false);
         isMovingAutonomously = false;
         Debug.Log("[Active Vision] Sincronização perfeita concluída!");
     }
-
-
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// using UnityEngine;
+// using Unity.Robotics.ROSTCPConnector;
+// using RosMessageTypes.Geometry;
+// using RosMessageTypes.Std; 
+// using RosMessageTypes.Sensor; 
+// using System.Collections;
+// using System;
+
+// public class TargetPointPublisher : MonoBehaviour
+// {
+//     [Header("Referências Core")]
+//     public CartesianHandController handController;
+//     public Transform robotBaseLink;
+//     public GGCNN_Subscriber ghostGripperController; // <-- NOVA REFERÊNCIA AQUI
+
+//     [Header("Configurações ROS - Visão Ativa")]
+//     public string intentionTopic = "/ggcnn/target_intention_point";
+//     public string commandTopic = "unity/target_pose_autonomous"; 
+    
+//     [Header("Configurações ROS - Sincronismo (Malha Fechada)")]
+//     public string jointStateTopic = "/ur5/joint_states";
+
+//     [Header("Parâmetros de Visão Ativa")]
+//     public float hoverHeight = 0.40f;
+
+//     private ROSConnection ros;
+//     private bool isMovingAutonomously = false;
+
+//     // --- Variáveis para Malha Fechada ---
+//     private readonly string[] allJointNames = new string[]
+//     {
+//         "shoulder_pan_joint",
+//         "shoulder_lift_joint",
+//         "elbow_joint",
+//         "wrist_1_joint",
+//         "wrist_2_joint",
+//         "wrist_3_joint"
+//     };
+//     private double[] currentJoints = new double[6];
+//     private bool hasReceivedJoints = false;
+
+//     void Start()
+//     {
+//         ros = ROSConnection.GetOrCreateInstance();
+//         ros.RegisterPublisher<PointMsg>(intentionTopic);
+//         ros.RegisterPublisher<PoseStampedMsg>(commandTopic);
+        
+//         // Ouvinte de juntas para saber quando o robô físico parou
+//         ros.Subscribe<JointStateMsg>(jointStateTopic, JointStateCallback);
+//     }
+
+//     // --- LEITURA DO GAZEBO ---
+//     void JointStateCallback(JointStateMsg msg)
+//     {
+//         for (int i = 0; i < allJointNames.Length; i++)
+//         {
+//             int index = Array.IndexOf(msg.name, allJointNames[i]);
+//             if (index != -1)
+//             {
+//                 currentJoints[i] = msg.position[index];
+//             }
+//         }
+//         hasReceivedJoints = true;
+//     }
+
+//     public void PublishTargetPoint(Vector3 unityWorldPoint)
+//     {
+//         if (robotBaseLink == null || handController == null) return;
+
+//         if (!isMovingAutonomously)
+//         {
+//             StartCoroutine(ActiveVisionRoutine(unityWorldPoint));
+//         }
+//     }
+
+//     private IEnumerator ActiveVisionRoutine(Vector3 worldTarget)
+//     {
+//         isMovingAutonomously = true;
+
+//         // --- SUPRESSÃO VISUAL ---
+//         // Desliga a garra fantasma imediatamente ao começar o voo do robô
+//         if (ghostGripperController != null) 
+//             ghostGripperController.SetVisibilityAllowance(false);
+
+//         // 1. DESENGATA A EMBREAGEM
+//         handController.PauseManualControl();
+//         Debug.Log("[Active Vision] Controle pausado. Calculando cinemática...");
+
+//         // 2. CÁLCULO E ENVIO DA POSE AUTÔNOMA PARA O KDL
+//         Vector3 hoverWorld = new Vector3(worldTarget.x, worldTarget.y + hoverHeight, worldTarget.z);
+//         Vector3 localHover = robotBaseLink.InverseTransformPoint(hoverWorld);
+
+//         PoseStampedMsg hoverPose = new PoseStampedMsg();
+//         hoverPose.header = new HeaderMsg { frame_id = "base_link" };
+        
+//         // Aplicação do seu Offset validado
+//         hoverPose.pose.position.x = localHover.z + 0.1072f;  
+//         hoverPose.pose.position.y = -localHover.x + 0.05f; 
+//         hoverPose.pose.position.z = localHover.y + 0.09f;  
+
+//         // Orientação ortogonal fixa
+//         hoverPose.pose.orientation.x = -1.0;
+//         hoverPose.pose.orientation.y = 0.0; 
+//         hoverPose.pose.orientation.z = 0.0;
+//         hoverPose.pose.orientation.w = 0.0;
+
+//         ros.Publish(commandTopic, hoverPose);
+
+//         // 3. ENVIA INTENÇÃO PARA O GGCNN
+//         Vector3 localTarget = robotBaseLink.InverseTransformPoint(worldTarget);
+//         PointMsg intentionMsg = new PointMsg(localTarget.y, localTarget.x, localTarget.z);
+//         ros.Publish(intentionTopic, intentionMsg);
+
+//         // ========================================================
+//         // 4. A ROTINA DE MALHA FECHADA (O seu sistema anti-congelamento)
+//         // ========================================================
+        
+//         // Aguarda meio segundo para dar tempo do ROS processar e o Gazebo começar a andar
+//         yield return new WaitForSeconds(0.5f);
+
+//         float timeout = 10.0f; // Tempo máximo de segurança
+//         float timer = 0f;
+        
+//         double[] previousJoints = new double[6];
+//         Array.Copy(currentJoints, previousJoints, 6);
+//         float stationaryTimer = 0f;
+
+//         while (timer < timeout)
+//         {
+//             if (hasReceivedJoints)
+//             {
+//                 bool isMoving = false;
+//                 for (int i = 0; i < 6; i++)
+//                 {
+//                     // Checa se alguma junta mudou mais de 0.002 radianos
+//                     if (Math.Abs(currentJoints[i] - previousJoints[i]) > 0.002f) 
+//                     {
+//                         isMoving = true;
+//                         break;
+//                     }
+//                 }
+
+//                 if (isMoving)
+//                 {
+//                     stationaryTimer = 0f;
+//                     Array.Copy(currentJoints, previousJoints, 6);
+//                 }
+//                 else
+//                 {
+//                     stationaryTimer += Time.deltaTime;
+//                     if (stationaryTimer >= 0.5f) // Se ficou completamente parado por 0.5s
+//                     {
+//                         Debug.Log("[Active Vision] Motores estabilizaram fisicamente no alvo.");
+//                         break; 
+//                     }
+//                 }
+//             }
+
+//             timer += Time.deltaTime;
+//             yield return null; 
+//         }
+
+//         // =================================================================
+//         // O SEGREDO DO SINCRONISMO MANTIDO
+//         // =================================================================
+//         // Dá um tempo extra para o Gazebo estabilizar a trepidação e a RealSense 
+//         // enviar uma imagem limpa para a GGCNN processar
+//         yield return new WaitForSeconds(0.8f); 
+
+//         // --- LIBERAÇÃO VISUAL ---
+//         // O robô está estável, a imagem está limpa. Libera o desenho da garra fantasma!
+//         if (ghostGripperController != null) 
+//             ghostGripperController.SetVisibilityAllowance(true);
+
+//         // 5. RETOMA CONTROLE (Start Automático)
+//         handController.ResumeManualControl(false);
+//         isMovingAutonomously = false;
+//         Debug.Log("[Active Vision] Sincronização perfeita concluída!");
+//     }
+
+
+// }
 
 
 
