@@ -45,7 +45,7 @@ public class GhostGripperManager : MonoBehaviour
 
     private IEnumerator WaitToArriveAndShow(Vector3 target)
     {
-        float timeout = 1.5f; // Tempo máximo de espera (1.5 segundos)
+        float timeout = 6.0f; // Tempo máximo de espera (1.5 segundos)
         float timer = 0f;
 
         // Pega a referência da peça que realmente se move (a primeira malha da garra)
@@ -55,8 +55,8 @@ public class GhostGripperManager : MonoBehaviour
             movingPart = gripperRenderers[0].transform;
         }
 
-        // Aguarda a garra chegar perto (30cm) OU o tempo limite estourar
-        while (Vector3.Distance(movingPart.position, target) > 0.30f && timer < timeout)
+        // Aguarda a garra chegar perto (25cm) OU o tempo limite estourar
+        while (Vector3.Distance(movingPart.position, target) >= 0.08f && timer < timeout)
         {
             timer += Time.deltaTime;
             yield return null; 
